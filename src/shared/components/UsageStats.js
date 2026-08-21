@@ -68,7 +68,11 @@ function RecentRequests({ requests = [] }) {
                     <td className="py-1.5">
                       <span className={`block w-1.5 h-1.5 rounded-full ${ok ? "bg-success" : "bg-error"}`} />
                     </td>
-                    <td className="py-1.5 font-mono truncate max-w-[120px]" title={r.model}>{r.model}</td>
+                    <td className="py-1.5 max-w-[150px] leading-tight" title={`${r.provider || ""} / ${r.model} / ${r.accountName || r.connectionId || ""}`}>
+                      {r.provider ? <div className="truncate font-mono text-[10px] leading-none text-text-muted">{r.provider}</div> : null}
+                      <div className="truncate font-mono text-xs text-text-main">{r.model}</div>
+                      {r.accountName ? <div className="truncate font-mono text-[10px] leading-none text-text-muted">{r.accountName}</div> : null}
+                    </td>
                     <td className="py-1.5 text-right whitespace-nowrap">
                       <span className="text-primary">{fmt(r.promptTokens)}↑</span>
                       {" "}

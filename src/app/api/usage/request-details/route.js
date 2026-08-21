@@ -45,8 +45,34 @@ export async function GET(request) {
     if (status) filter.status = status;
     if (startDate) filter.startDate = startDate;
     if (endDate) filter.endDate = endDate;
-    
     const result = await getRequestDetails(filter);
+
+    function extractIds(d) {
+      const pr = d?.providerRequest;
+      let cacheKey = null, sessionId = null, conversationId = null;
+      if (pr && typeof pr === "object" && !pr.redacted) {
+        sessionId = pr?.request?.sessionId != null ? String(pr.request.sessionId).trim() || null : (pr.sessionId ? String(pr.sessionId) : null);
+        if (pr.prompt_cache_key) cacheKey = String(pr.prompt_cache_key);
+        else if (sessionId) cacheKey = sessionId;
+        else if (pr.session_id) cacheKey = String(pr.session_id);
+        else if (pr.conversation_id) cacheKey = String(pr.conversation_id);
+        if (pr.requestId) {
+          const m = String(pr.requestId).match(/^agent\/([0-9a-f-]{36})\//i);
+          if (m) conversationId = m[1];
+          if (!cacheKey && conversationId) cacheKey = conversationId;
+        }
+        if (!conversationId && pr.conversation_id) conversationId = String(pr.conversation_id);
+      }
+      const rq = d?.request;
+      if (!cacheKey && rq && typeof rq === "object" && !rq.redacted) {
+        if (rq.prompt_cache_key) cacheKey = String(rq.prompt_cache_key);
+        else if (rq.session_id) cacheKey = String(rq.session_id);
+        if (!sessionId && rq.session_id) sessionId = String(rq.session_id);
+        if (!conversationId && rq.conversation_id) conversationId = String(rq.conversation_id);
+      }
+      if (cacheKey && !sessionId) sessionId = cacheKey;
+      return { cacheKey, sessionId, conversationId };
+    }
 
     // Redact conversation payloads: the stored details include full request
     // bodies (user prompts, tool calls) and provider responses. Returning them
@@ -54,7 +80,8 @@ export async function GET(request) {
     // disabled, anyone) read every user's conversation history. Keep the
     // metadata (model, tokens, latency, status) but drop message content.
     const redactedDetails = (result.details || []).map((d) => {
-      const redacted = { ...d };
+      const { cacheKey, sessionId, conversationId } = extractIds(d);
+      const redacted = { ...d, cacheKey, sessionId, conversationId };
       for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
         if (redacted[key] !== undefined) {
           redacted[key] = { redacted: true };
@@ -62,7 +89,6 @@ export async function GET(request) {
       }
       return redacted;
     });
-
     return NextResponse.json({ ...result, details: redactedDetails });
   } catch (error) {
     console.error("[API] Failed to get request details:", error);

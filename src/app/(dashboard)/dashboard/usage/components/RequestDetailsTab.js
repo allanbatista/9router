@@ -10,6 +10,29 @@ import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 
 let providerNameCache = null;
 let providerNodesCache = null;
+let connectionNameCache = null;
+
+async function fetchConnectionNames() {
+  if (connectionNameCache) return connectionNameCache;
+  try {
+    const res = await fetch("/api/providers");
+    const data = await res.json();
+    const map = {};
+    for (const c of data.connections || []) {
+      map[c.id] = c.email || c.displayName || c.name || `${c.id.slice(0, 8)}…`;
+    }
+    connectionNameCache = map;
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+function getConnectionName(connectionId, cache) {
+  if (!connectionId) return "—";
+  if (cache && cache[connectionId]) return cache[connectionId];
+  return `${connectionId.slice(0, 8)}…`;
+}
 
 async function fetchProviderNames() {
   if (providerNameCache && providerNodesCache) {
@@ -99,6 +122,46 @@ function getInputTokens(tokens) {
   return prompt < cache ? cache : prompt;
 }
 
+function getCacheKey(detail) {
+  if (!detail) return null;
+  if (detail.cacheKey) return String(detail.cacheKey);
+  if (detail.cache_key) return String(detail.cache_key);
+  const pr = detail.providerRequest;
+  if (pr && typeof pr === "object" && !pr.redacted) {
+    const sid = pr?.request?.sessionId;
+    if (sid != null && String(sid).trim() !== "") return String(sid);
+    if (pr.prompt_cache_key) return String(pr.prompt_cache_key);
+    if (pr.session_id) return String(pr.session_id);
+    if (pr.conversation_id) return String(pr.conversation_id);
+    if (pr.requestId) {
+      const m = String(pr.requestId).match(/^agent\/([0-9a-f-]{36})\//i);
+      if (m) return m[1];
+    }
+  }
+  const rq = detail.request;
+  if (rq && typeof rq === "object" && !rq.redacted) {
+    if (rq.prompt_cache_key) return String(rq.prompt_cache_key);
+    if (rq.session_id) return String(rq.session_id);
+  }
+  return null;
+}
+function getSessionId(detail) {
+  if (!detail) return null;
+  if (detail.sessionId) return String(detail.sessionId);
+  if (detail.session_id) return String(detail.session_id);
+  return getCacheKey(detail);
+}
+function getConversationId(detail) {
+  if (!detail) return null;
+  if (detail.conversationId) return String(detail.conversationId);
+  if (detail.conversation_id) return String(detail.conversation_id);
+  const pr = detail.providerRequest;
+  if (pr && typeof pr === "object" && !pr.redacted && pr.requestId) {
+    const m = String(pr.requestId).match(/^agent\/([0-9a-f-]{36})\//i);
+    if (m) return m[1];
+  }
+  return null;
+}
 export default function RequestDetailsTab() {
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
@@ -112,6 +175,7 @@ export default function RequestDetailsTab() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [providers, setProviders] = useState([]);
   const [providerNameCache, setProviderNameCache] = useState(null);
+  const [connectionCache, setConnectionCache] = useState(null);
   const [filters, setFilters] = useState({
     provider: "",
     startDate: "",
@@ -124,8 +188,10 @@ export default function RequestDetailsTab() {
       const data = await res.json();
       setProviders(data.providers || []);
 
-      const cache = await fetchProviderNames();
-      setProviderNameCache(cache.providerNameCache);
+      const pCache = await fetchProviderNames();
+      setProviderNameCache(pCache.providerNameCache);
+      const cCache = await fetchConnectionNames();
+      setConnectionCache(cCache);
     } catch (error) {
       console.error("Failed to fetch providers:", error);
     }
@@ -239,14 +305,12 @@ export default function RequestDetailsTab() {
               variant="ghost" 
               onClick={handleClearFilters}
               disabled={!filters.provider && !filters.startDate && !filters.endDate}
-              className="w-full"
             >
               Clear Filters
             </Button>
           </div>
         </div>
       </Card>
-
       <Card padding="none">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[880px]">
@@ -254,11 +318,7 @@ export default function RequestDetailsTab() {
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Model</th>
-                <th className="text-left p-4 text-sm font-semibold text-text-main">Provider</th>
-                <th className="text-right p-4 text-sm font-semibold text-text-main">Input Tokens</th>
-                <th className="text-right p-4 text-sm font-semibold text-text-main">Cached</th>
-                <th className="text-right p-4 text-sm font-semibold text-text-main">Cache Creation</th>
-                <th className="text-right p-4 text-sm font-semibold text-text-main">Output Tokens</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">Tokens</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Latency</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Action</th>
               </tr>
@@ -266,7 +326,7 @@ export default function RequestDetailsTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="5" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -275,38 +335,47 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="5" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
               ) : (
-                details.map((detail, index) => (
+                details.map((detail, index) => {
+                  const input = getInputTokens(detail.tokens);
+                  const cached = getCachedTokens(detail.tokens);
+                  const diff = Math.max(0, input - cached);
+                  const output = detail.tokens?.completion_tokens ?? 0;
+                  const cacheKey = getCacheKey(detail);
+                  const sessionId = getSessionId(detail);
+                  const conversationId = getConversationId(detail);
+                  const showSid = sessionId && sessionId !== cacheKey;
+                  return (
                   <tr
                     key={`${detail.id}-${index}`}
                     className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
                   >
-                    <td className="whitespace-nowrap p-4 text-sm text-text-main">
+                    <td className="whitespace-nowrap p-4 text-xs font-mono text-text-muted">
                       {new Date(detail.timestamp).toLocaleString()}
                     </td>
-                    <td className="max-w-[260px] truncate p-4 font-mono text-sm text-text-main">
-                      {detail.model}
+                    <td className="max-w-[280px] p-4 text-sm">
+                      <div className="truncate font-mono text-[11px] leading-none text-text-muted">{getProviderName(detail.provider, providerNameCache)}</div>
+                      <div className="truncate font-mono text-sm text-text-main">{detail.model}</div>
+                      <div className="truncate font-mono text-xs text-text-muted" title={detail.connectionId || ""}>{getConnectionName(detail.connectionId, connectionCache)}</div>
                     </td>
-                    <td className="max-w-[180px] truncate p-4 text-sm text-text-main">
-                       <span className="font-medium">
-                         {getProviderName(detail.provider, providerNameCache)}
-                       </span>
-                     </td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">
-                      {getInputTokens(detail.tokens).toLocaleString()}
-                    </td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">
-                      {getCachedTokens(detail.tokens) > 0 ? getCachedTokens(detail.tokens).toLocaleString() : "—"}
-                    </td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">
-                      {getCacheCreationTokens(detail.tokens) > 0 ? getCacheCreationTokens(detail.tokens).toLocaleString() : "—"}
-                    </td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">
-                      {detail.tokens?.completion_tokens?.toLocaleString() || 0}
+                    <td className="p-4 text-sm font-mono">
+                      <div className="whitespace-nowrap">
+                        <span className="text-sky-600 dark:text-sky-400">{input.toLocaleString()}</span>
+                        <span className="text-text-muted"> - </span>
+                        <span className="text-amber-600 dark:text-amber-400">{cached.toLocaleString()}</span>
+                        <span className="text-text-muted"> = </span>
+                        <span className="font-semibold text-text-main">{diff.toLocaleString()}</span>
+                        <span className="text-text-muted"> / </span>
+                        <span className="text-violet-600 dark:text-violet-400">{output.toLocaleString()}</span>
+                      </div>
+                      <div className="truncate font-mono text-[11px] leading-none text-text-muted max-w-[280px] mt-1 flex gap-1.5 items-center" title={`cache:${cacheKey || "-"}${showSid ? ` sid:${sessionId}` : ""}${conversationId ? ` cid:${conversationId}` : ""}`}>
+                        {cacheKey ? <span>ck:{cacheKey.length > 22 ? `${cacheKey.slice(0, 10)}…${cacheKey.slice(-6)}` : cacheKey}</span> : <span>—</span>}
+                        {showSid ? <span className="text-text-muted/60">· sid:{sessionId.length > 16 ? `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}` : sessionId}</span> : null}
+                      </div>
                     </td>
                     <td className="p-4 text-sm text-text-muted">
                       <div className="flex flex-col gap-0.5">
@@ -324,23 +393,12 @@ export default function RequestDetailsTab() {
                       </Button>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
-
-        {!loading && details.length > 0 && (
-          <div className="border-t border-black/5 dark:border-white/5">
-            <Pagination
-              currentPage={pagination.page}
-              pageSize={pagination.pageSize}
-              totalItems={pagination.totalItems}
-              onPageChange={handlePageChange}
-              onPageSizeChange={handlePageSizeChange}
-            />
-          </div>
-        )}
       </Card>
 
       <Drawer
@@ -365,9 +423,27 @@ export default function RequestDetailsTab() {
                  <span className="text-text-main font-medium">{getProviderName(selectedDetail.provider, providerNameCache)}</span>
                </div>
               <div>
+                <span className="text-text-muted">Account:</span>{" "}
+                <span className="text-text-main font-mono text-xs break-all" title={selectedDetail.connectionId || ""}>{getConnectionName(selectedDetail.connectionId, connectionCache)}</span>
+              </div>
+              <div>
                 <span className="text-text-muted">Model:</span>{" "}
                 <span className="text-text-main font-mono">{selectedDetail.model}</span>
               </div>
+              <div>
+                <span className="text-text-muted">Cache Key:</span>{" "}
+                <span className="font-mono text-xs break-all text-text-main" title={getCacheKey(selectedDetail) || ""}>{getCacheKey(selectedDetail) ? (getCacheKey(selectedDetail).length > 36 ? `${getCacheKey(selectedDetail).slice(0, 18)}…${getCacheKey(selectedDetail).slice(-8)}` : getCacheKey(selectedDetail)) : "—"}</span>
+              </div>
+              <div>
+                <span className="text-text-muted">Session ID:</span>{" "}
+                <span className="font-mono text-xs break-all text-text-main" title={getSessionId(selectedDetail) || ""}>{getSessionId(selectedDetail) || "—"}</span>
+              </div>
+              {getConversationId(selectedDetail) ? (
+              <div>
+                <span className="text-text-muted">Conversation:</span>{" "}
+                <span className="font-mono text-xs break-all text-text-main" title={getConversationId(selectedDetail) || ""}>{getConversationId(selectedDetail)}</span>
+              </div>
+              ) : null}
               <div>
                 <span className="text-text-muted">Status:</span>{" "}
                 <span className={cn(
@@ -383,20 +459,20 @@ export default function RequestDetailsTab() {
                   TTFT {selectedDetail.latency?.ttft || 0}ms / Total {selectedDetail.latency?.total || 0}ms
                 </span>
               </div>
-              <div>
-                <span className="text-text-muted">Input Tokens:</span>{" "}
-                <span className="text-text-main font-mono">
-                  {getInputTokens(selectedDetail.tokens).toLocaleString()}
+              <div className="sm:col-span-2">
+                <span className="text-text-muted">Tokens:</span>{" "}
+                {(() => { const input = getInputTokens(selectedDetail.tokens); const cached = getCachedTokens(selectedDetail.tokens); const diff = Math.max(0, input - cached); const out = selectedDetail.tokens?.completion_tokens ?? 0; return (
+                <span className="font-mono">
+                  <span className="text-sky-600 dark:text-sky-400">{input.toLocaleString()}</span>
+                  <span className="text-text-muted"> - </span>
+                  <span className="text-amber-600 dark:text-amber-400">{cached.toLocaleString()}</span>
+                  <span className="text-text-muted"> = </span>
+                  <span className="font-semibold text-text-main">{diff.toLocaleString()}</span>
+                  <span className="text-text-muted"> / </span>
+                  <span className="text-violet-600 dark:text-violet-400">{out.toLocaleString()}</span>
                 </span>
+                ); })()}
               </div>
-              {getCachedTokens(selectedDetail.tokens) > 0 && (
-                <div>
-                  <span className="text-text-muted">Cached Tokens:</span>{" "}
-                  <span className="text-text-main font-mono">
-                    {getCachedTokens(selectedDetail.tokens).toLocaleString()}
-                  </span>
-                </div>
-              )}
               {getCacheCreationTokens(selectedDetail.tokens) > 0 && (
                 <div>
                   <span className="text-text-muted">Cache Creation:</span>{" "}
@@ -405,12 +481,6 @@ export default function RequestDetailsTab() {
                   </span>
                 </div>
               )}
-              <div>
-                <span className="text-text-muted">Output Tokens:</span>{" "}
-                <span className="text-text-main font-mono">
-                  {selectedDetail.tokens?.completion_tokens?.toLocaleString() || 0}
-                </span>
-              </div>
             </div>
 
             {selectedDetail.pxpipe && (
