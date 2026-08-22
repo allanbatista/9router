@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { getCachedTokens, getPromptTokens } from "@/shared/utils/usageTokens.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -61,9 +62,9 @@ function addToCounter(target, key, values) {
 }
 
 function aggregateEntryToDay(day, entry) {
-  const promptTokens = entry.tokens?.prompt_tokens || entry.tokens?.input_tokens || 0;
+  const promptTokens = getPromptTokens(entry.tokens);
   const completionTokens = entry.tokens?.completion_tokens || entry.tokens?.output_tokens || 0;
-  const cachedTokens = entry.tokens?.cached_tokens || entry.tokens?.cache_read_input_tokens || 0;
+  const cachedTokens = getCachedTokens(entry.tokens);
   const cost = entry.cost || 0;
   const vals = { promptTokens, completionTokens, cachedTokens, cost };
 
@@ -219,7 +220,7 @@ export async function getActiveRequests() {
       const t = e.tokens || {};
       return {
         timestamp: e.timestamp, model: e.model, provider: e.provider || "",
-        promptTokens: t.prompt_tokens || t.input_tokens || 0,
+        promptTokens: getPromptTokens(t),
         completionTokens: t.completion_tokens || t.output_tokens || 0,
         status: e.status || "ok",
       };
@@ -246,7 +247,7 @@ export async function saveRequestUsage(entry) {
     entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
 
     const tokens = entry.tokens || {};
-    const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
+    const promptTokens = getPromptTokens(tokens);
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
 
     let inserted = false;
@@ -378,9 +379,9 @@ export async function getUsageStats(period = "all") {
       return {
         timestamp: r.timestamp, model: r.model, provider: r.provider || "",
         connectionId: r.connectionId || null, accountName,
-        promptTokens: t.prompt_tokens || t.input_tokens || 0,
+        promptTokens: getPromptTokens(t),
         completionTokens: t.completion_tokens || t.output_tokens || 0,
-        cachedTokens: t.cached_tokens || t.cache_read_input_tokens || 0,
+        cachedTokens: getCachedTokens(t),
         status: r.status || "ok",
       };
     })
@@ -582,9 +583,9 @@ export async function getUsageStats(period = "all") {
 
     for (const r of filtered) {
       const tokens = parseJson(r.tokens, {}) || {};
-      const promptTokens = tokens.prompt_tokens || 0;
+      const promptTokens = getPromptTokens(tokens);
       const completionTokens = tokens.completion_tokens || 0;
-      const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
+      const cachedTokens = getCachedTokens(tokens);
       const entryCost = r.cost || 0;
       const providerDisplayName = providerNodeNameMap[r.provider] || r.provider;
 
@@ -745,7 +746,7 @@ export async function getRecentLogs(limit = 200) {
   try {
     const db = await getAdapter();
     const rows = db.all(
-      `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`,
+      `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory ORDER BY julianday(timestamp) DESC, timestamp DESC, id DESC LIMIT ?`,
       [limit],
     );
     if (!rows.length) return [];

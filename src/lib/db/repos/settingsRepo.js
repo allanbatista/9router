@@ -71,7 +71,11 @@ async function readRaw() {
 
 // Merge raw settings with defaults; backward-compat for missing keys
 export function mergeWithDefaults(raw) {
-  const merged = { ...DEFAULT_SETTINGS, ...(raw || {}) };
+  const source = { ...(raw || {}) };
+  if (typeof source.enableObservability !== "boolean" && typeof source.observabilityEnabled === "boolean") {
+    source.enableObservability = source.observabilityEnabled;
+  }
+  const merged = { ...DEFAULT_SETTINGS, ...source };
   for (const [key, defVal] of Object.entries(DEFAULT_SETTINGS)) {
     if (merged[key] === undefined) {
       if (

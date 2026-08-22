@@ -1,3 +1,4 @@
+import { v7 as uuidv7 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
@@ -70,11 +71,8 @@ function sanitizeHeaders(headers) {
 
 export const __test__ = { sanitizeHeaders };
 
-function generateDetailId(model) {
-  const timestamp = new Date().toISOString();
-  const random = Math.random().toString(36).substring(2, 8);
-  const modelPart = model ? model.replace(/[^a-zA-Z0-9-]/g, "-") : "unknown";
-  return `${timestamp}-${random}-${modelPart}`;
+function generateDetailId(_model) {
+  return uuidv7();
 }
 
 function truncateField(obj, maxSize) {
@@ -85,12 +83,36 @@ function truncateField(obj, maxSize) {
   return obj || {};
 }
 
+function is4xxStatus(status) {
+  if (status == null) return false;
+  const s = String(status).trim();
+  const n = parseInt(s.match(/\b(\d{3})\b/)?.[1] || s, 10);
+  return Number.isFinite(n) && n >= 400 && n < 500;
+}
+
+function restoreErrorProviderResponse(detail) {
+  if (!detail || !detail.response || detail.providerResponse == null) return detail;
+  if (typeof detail.providerResponse !== "object" || Object.keys(detail.providerResponse).length > 0) return detail;
+
+  const status = detail.response.status;
+  const error = detail.response.error ?? detail.error;
+  if (status == null || error == null) return detail;
+
+  return {
+    ...detail,
+    providerResponse: {
+      status,
+      body: typeof error === "string" ? error : stringifyJson(error),
+      recoveredFromStoredError: true,
+    },
+  };
+}
+
 async function flushToDatabase() {
   if (isFlushing) return;
   if (writeBuffer.length === 0) return;
   isFlushing = true;
   try {
-    // Drain entire buffer (loop in case more pushed during await)
     while (writeBuffer.length > 0) {
       const items = writeBuffer.splice(0, writeBuffer.length);
       const db = await getAdapter();
@@ -102,6 +124,7 @@ async function flushToDatabase() {
           if (!item.timestamp) item.timestamp = new Date().toISOString();
           if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
 
+          const is4xx = is4xxStatus(item.status) || is4xxStatus(item.response?.status);
           const record = {
             id: item.id,
             provider: item.provider || null,
@@ -111,10 +134,11 @@ async function flushToDatabase() {
             status: item.status || null,
             latency: item.latency || {},
             tokens: item.tokens || {},
-            request: truncateField(item.request, config.maxJsonSize),
-            providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
-            providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
-            response: truncateField(item.response, config.maxJsonSize),
+            request: is4xx ? (item.request || {}) : truncateField(item.request, config.maxJsonSize),
+            providerRequest: is4xx ? (item.providerRequest || null) : truncateField(item.providerRequest, config.maxJsonSize),
+            providerResponse: is4xx ? (item.providerResponse ?? null) : truncateField(item.providerResponse, config.maxJsonSize),
+            response: is4xx ? (item.response ?? {}) : truncateField(item.response, config.maxJsonSize),
+            error: item.error || null,
             pxpipe: item.pxpipe || undefined,
           };
 
@@ -146,8 +170,6 @@ export async function saveRequestDetail(detail) {
 
   writeBuffer.push(detail);
 
-  // Trigger immediate flush if batch threshold reached.
-  // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
   if (writeBuffer.length >= config.batchSize) {
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     flushToDatabase().catch((e) => console.error("[requestDetailsRepo] flush err:", e));
@@ -181,10 +203,10 @@ export async function getRequestDetails(filter = {}) {
   const offset = (page - 1) * pageSize;
 
   const rows = db.all(
-    `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+    `SELECT data FROM requestDetails ${where} ORDER BY julianday(timestamp) DESC, timestamp DESC, id DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
   );
-  const details = rows.map((r) => parseJson(r.data, {}));
+  const details = rows.map((r) => restoreErrorProviderResponse(parseJson(r.data, {})));
 
   return {
     details,
@@ -201,7 +223,7 @@ export async function getDistinctProviders() {
 export async function getRequestDetailById(id) {
   const db = await getAdapter();
   const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
-  return row ? parseJson(row.data, null) : null;
+  return row ? restoreErrorProviderResponse(parseJson(row.data, null)) : null;
 }
 
 const _shutdownHandler = async () => {

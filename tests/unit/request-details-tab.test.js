@@ -70,6 +70,22 @@ describe("request details — tab crash-risk cases", () => {
     expect(Array.isArray(res.details)).toBe(true);
   });
 
+  it("orders timestamps by instant, including timezone offsets", async () => {
+    const rows = [
+      ["sort-earlier", "2025-01-02T00:00:00Z"],
+      ["sort-later", "2025-01-01T23:30:00-03:00"],
+    ];
+    for (const [id, timestamp] of rows) {
+      adapter.run(
+        `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+        [id, timestamp, "sort-test", "model", null, "ok", JSON.stringify({ id, timestamp })]
+      );
+    }
+
+    const res = await db.getRequestDetails({ provider: "sort-test", pageSize: 20 });
+    expect(res.details.map((detail) => detail.id)).toEqual(["sort-later", "sort-earlier"]);
+  });
+
   it("large pageSize (providers route uses 9999) → returns all, no crash", async () => {
     await saveDetail({
       id: "big-1", provider: "anthropic", model: "claude-3",
@@ -95,6 +111,34 @@ describe("request details — tab crash-risk cases", () => {
     // Truncated field is a plain object safe for JSON.stringify in the drawer
     expect(() => JSON.stringify(got)).not.toThrow();
     expect(got.request._truncated).toBe(true);
+  });
+
+  it("error response keeps the raw provider body", async () => {
+    await saveDetail({
+      id: "error-raw-1", provider: "antigravity", model: "gemini-3.7-flash-high",
+      status: "error", error: "Individual quota reached", response: { status: 429, error: "Individual quota reached" },
+      providerResponse: { status: 429, body: JSON.stringify({ error: { message: "Individual quota reached" } }) },
+    });
+
+    const got = await db.getRequestDetailById("error-raw-1");
+    expect(got.providerResponse.body).toContain("Individual quota reached");
+    expect(got.error).toBe("Individual quota reached");
+  });
+
+  it("recovers the provider response for legacy error rows", async () => {
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      ["legacy-error-raw-1", new Date().toISOString(), "antigravity", "gemini", null, "error", JSON.stringify({
+        id: "legacy-error-raw-1",
+        status: "error",
+        response: { status: 429, error: JSON.stringify({ error: { message: "Individual quota reached" } }) },
+        providerResponse: {},
+      })]
+    );
+
+    const got = await db.getRequestDetailById("legacy-error-raw-1");
+    expect(got.providerResponse.recoveredFromStoredError).toBe(true);
+    expect(got.providerResponse.body).toContain("Individual quota reached");
   });
 
   it("missing tokens/timestamp on row → getInputTokens-style access safe", async () => {

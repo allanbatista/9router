@@ -14,11 +14,12 @@ const OPTIONAL_PARAMS = [
   "prompt_cache_key", "session_id", "conversation_id"
 ];
 
-export function extractRequestConfig(body, stream) {
-  const config = { messages: body.messages || [], model: body.model, stream };
-  for (const param of OPTIONAL_PARAMS) {
-    if (body[param] !== undefined) config[param] = body[param];
-  }
+export function extractRequestConfig(body, stream, clientRawRequest = null) {
+  const source = clientRawRequest?.body || body || {};
+  const config = typeof structuredClone === "function"
+    ? structuredClone(source)
+    : JSON.parse(JSON.stringify(source));
+  if (!clientRawRequest && config.stream === undefined) config.stream = stream;
   return config;
 }
 
@@ -71,6 +72,7 @@ export function buildRequestDetail(base, overrides = {}) {
     providerRequest: base.providerRequest || null,
     providerResponse: base.providerResponse || null,
     response: base.response || {},
+    error: base.error || null,
     pxpipe: base.pxpipe || undefined,
     status: base.status || "success",
     ...overrides

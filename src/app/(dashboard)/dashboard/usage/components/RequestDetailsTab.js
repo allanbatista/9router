@@ -3,14 +3,25 @@
 import { useState, useEffect, useCallback } from "react";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
+import Badge from "@/shared/components/Badge";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
+import { getCachedTokens, getCacheCreationTokens, getPromptTokens } from "@/shared/utils/usageTokens";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
-
-let providerNameCache = null;
 let providerNodesCache = null;
+let providerNameCache = null;
 let connectionNameCache = null;
+
+const timestampFormatter = new Intl.DateTimeFormat("pt-BR", {
+  dateStyle: "short",
+  timeStyle: "medium",
+});
+
+function formatTimestamp(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Data inválida" : timestampFormatter.format(date);
+}
 
 async function fetchConnectionNames() {
   if (connectionNameCache) return connectionNameCache;
@@ -19,7 +30,11 @@ async function fetchConnectionNames() {
     const data = await res.json();
     const map = {};
     for (const c of data.connections || []) {
-      map[c.id] = c.email || c.displayName || c.name || `${c.id.slice(0, 8)}…`;
+      const email = c.email
+        || c.providerSpecificData?.email
+        || c.providerSpecificData?.userInfo?.email
+        || c.providerSpecificData?.accountEmail;
+      map[c.id] = email || c.displayName || c.name || `${c.id.slice(0, 8)}…`;
     }
     connectionNameCache = map;
     return map;
@@ -105,21 +120,8 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon = null 
   );
 }
 
-function getCachedTokens(tokens) {
-  return tokens?.cached_tokens || tokens?.cache_read_input_tokens || 0;
-}
-
-function getCacheCreationTokens(tokens) {
-  return tokens?.cache_creation_input_tokens || 0;
-}
-
 function getInputTokens(tokens) {
-  const prompt = tokens?.prompt_tokens || tokens?.input_tokens || 0;
-  // Canonical storage keeps prompt cache-inclusive. Legacy Claude rows may have
-  // stored prompt cache-exclusive; fall back to cache when it's larger so old
-  // rows don't under-report input.
-  const cache = getCachedTokens(tokens);
-  return prompt < cache ? cache : prompt;
+  return getPromptTokens(tokens);
 }
 
 function getCacheKey(detail) {
@@ -263,18 +265,29 @@ export default function RequestDetailsTab() {
 
   const handleClearFilters = () => {
     setFilters({ provider: "", startDate: "", endDate: "" });
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  const handleProviderChange = (provider) => {
+    setFilters(prev => ({ ...prev, provider }));
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  const handleDateChange = (field, value) => {
+    setFilters(prev => ({ ...prev, [field]: value }));
+    setPagination(prev => ({ ...prev, page: 1 }));
   };
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <Card padding="md">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <div className="flex min-w-0 flex-col gap-2">
             <label htmlFor="provider-filter" className="text-sm font-medium text-text-main">Provider</label>
             <select
               id="provider-filter"
               value={filters.provider}
-              onChange={(e) => setFilters({ ...filters, provider: e.target.value })}
+              onChange={(e) => handleProviderChange(e.target.value)}
               className={cn(
                 "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
                 "text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20",
@@ -297,7 +310,7 @@ export default function RequestDetailsTab() {
               id="start-date-filter"
               type="datetime-local"
               value={filters.startDate}
-              onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
+              onChange={(e) => handleDateChange("startDate", e.target.value)}
               className={cn(
                 "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
                 "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -311,7 +324,7 @@ export default function RequestDetailsTab() {
               id="end-date-filter"
               type="datetime-local"
               value={filters.endDate}
-              onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
+              onChange={(e) => handleDateChange("endDate", e.target.value)}
               className={cn(
                 "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
                 "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -319,7 +332,19 @@ export default function RequestDetailsTab() {
             />
           </div>
           
-          <div className="flex min-w-0 flex-col gap-2 sm:col-span-2 lg:col-span-1">
+          <div className="flex min-w-0 flex-col gap-1 sm:col-span-1">
+            <span className="hidden text-sm font-medium text-text-main opacity-0 lg:block" aria-hidden="true">Refresh</span>
+            <Button
+              variant="outline"
+              onClick={() => fetchDetails()}
+              disabled={loading}
+              icon={loading ? "progress_activity" : "refresh"}
+              className={loading ? "animate-pulse" : ""}
+            >
+              Refresh
+            </Button>
+          </div>
+          <div className="flex min-w-0 flex-col gap-1 sm:col-span-1">
             <span className="hidden text-sm font-medium text-text-main opacity-0 lg:block" aria-hidden="true">Clear</span>
             <Button 
               variant="ghost" 
@@ -333,10 +358,10 @@ export default function RequestDetailsTab() {
       </Card>
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[880px]">
+          <table className="w-full min-w-[980px]">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
-                <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">Request</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Model</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Tokens</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Latency</th>
@@ -367,21 +392,30 @@ export default function RequestDetailsTab() {
                   const output = detail.tokens?.completion_tokens ?? 0;
                   const cacheKey = getCacheKey(detail);
                   const rawSessionId = getRawSessionId(detail);
-                  const showRaw = rawSessionId && rawSessionId !== cacheKey;
+                  const isSuccess = detail.status === "success" || detail.status === "ok";
+                  const isError = detail.status && !isSuccess && detail.status !== "pending";
+                  const badgeVariant = isSuccess ? "success" : isError ? "error" : "default";
                   return (
                   <tr
                     key={`${detail.id}-${index}`}
                     className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
                   >
-                    <td className="whitespace-nowrap p-4 text-xs font-mono text-text-muted">
-                      {new Date(detail.timestamp).toLocaleString()}
+                    <td className="p-4 align-top">
+                      <div className="flex min-w-0 flex-col gap-1.5 max-w-[260px]">
+                        <div className="font-mono text-xs break-all leading-tight text-text-main" title={detail.id}>{detail.id}</div>
+                        <div className="font-mono text-[10px] break-all leading-tight text-text-muted" title={cacheKey || ""}>ck: {cacheKey || "—"}</div>
+                        <div className="font-mono text-[10px] break-all leading-tight text-text-muted" title={rawSessionId || ""}>session: {rawSessionId || "—"}</div>
+                        <div className="font-mono text-[10px] leading-none text-text-muted">{formatTimestamp(detail.timestamp)}</div>
+                        <div><Badge variant={badgeVariant} size="sm" dot>{detail.status || "unknown"}</Badge></div>
+                        {detail.errorLabel ? <div className="text-[10px] leading-tight text-red-600 dark:text-red-400" title={detail.errorLabel}>{detail.errorLabel}</div> : null}
+                      </div>
                     </td>
-                    <td className="max-w-[280px] p-4 text-sm">
+                    <td className="max-w-[280px] p-4 text-sm align-top">
                       <div className="truncate font-mono text-[11px] leading-none text-text-muted">{getProviderName(detail.provider, providerNameCache)}</div>
                       <div className="truncate font-mono text-sm text-text-main">{detail.model}</div>
                       <div className="truncate font-mono text-xs text-text-muted" title={detail.connectionId || ""}>{getConnectionName(detail.connectionId, connectionCache)}</div>
                     </td>
-                    <td className="p-4 text-sm font-mono">
+                    <td className="p-4 text-sm font-mono align-top">
                       <div className="whitespace-nowrap">
                         <span className="text-sky-600 dark:text-sky-400">{input.toLocaleString()}</span>
                         <span className="text-text-muted"> - </span>
@@ -391,18 +425,14 @@ export default function RequestDetailsTab() {
                         <span className="text-text-muted"> / </span>
                         <span className="text-violet-600 dark:text-violet-400">{output.toLocaleString()}</span>
                       </div>
-                      <div className="flex flex-col gap-0.5 mt-1 max-w-[320px]">
-                        <div className="font-mono text-[11px] leading-tight break-all text-text-muted" title={cacheKey || ""}>{cacheKey ? `ck:${cacheKey}` : "—"}</div>
-                        {showRaw ? <div className="font-mono text-[10px] leading-tight break-all text-text-muted/70" title={rawSessionId}>{rawSessionId}</div> : null}
-                      </div>
                     </td>
-                    <td className="p-4 text-sm text-text-muted">
+                    <td className="p-4 text-sm text-text-muted align-top">
                       <div className="flex flex-col gap-0.5">
                         <div>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
                         <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
                       </div>
                     </td>
-                    <td className="p-4 text-center">
+                    <td className="p-4 text-center align-top">
                       <Button
                         variant="outline"
                         size="sm"
@@ -419,7 +449,13 @@ export default function RequestDetailsTab() {
           </table>
         </div>
       </Card>
-
+      <Pagination
+        currentPage={pagination.page}
+        pageSize={pagination.pageSize}
+        totalItems={pagination.totalItems}
+        onPageChange={handlePageChange}
+        onPageSizeChange={handlePageSizeChange}
+      />
       <Drawer
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
@@ -435,7 +471,7 @@ export default function RequestDetailsTab() {
               </div>
               <div>
                 <span className="text-text-muted">Timestamp:</span>{" "}
-                <span className="text-text-main">{new Date(selectedDetail.timestamp).toLocaleString()}</span>
+                <span className="text-text-main">{formatTimestamp(selectedDetail.timestamp)}</span>
               </div>
               <div>
                  <span className="text-text-muted">Provider:</span>{" "}
@@ -456,7 +492,7 @@ export default function RequestDetailsTab() {
               </div>
               <div>
                 <span className="text-text-muted">Session ID:</span>{" "}
-                <span className="font-mono text-xs break-all text-text-main" title={getSessionId(selectedDetail) || ""}>{getSessionId(selectedDetail) || "—"}</span>
+                <span className="font-mono text-xs break-all text-text-main" title={getRawSessionId(selectedDetail) || getSessionId(selectedDetail) || ""}>{getRawSessionId(selectedDetail) || getSessionId(selectedDetail) || "—"}</span>
               </div>
               {getConversationId(selectedDetail) ? (
               <div>
@@ -473,6 +509,14 @@ export default function RequestDetailsTab() {
                   {selectedDetail.status}
                 </span>
               </div>
+              {selectedDetail.errorLabel || selectedDetail.error || selectedDetail.response?.error ? (
+                <div className="sm:col-span-2">
+                  <span className="text-text-muted">Error:</span>{" "}
+                  <span className="break-words text-red-600 dark:text-red-400">
+                    {selectedDetail.errorLabel || selectedDetail.error || selectedDetail.response?.error}
+                  </span>
+                </div>
+              ) : null}
               <div>
                 <span className="text-text-muted">Latency:</span>{" "}
                 <span className="text-text-main font-mono">

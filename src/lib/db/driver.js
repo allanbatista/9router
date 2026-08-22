@@ -1,4 +1,6 @@
-import { ensureDirs, DATA_FILE } from "./paths.js";
+import fs from "node:fs";
+import path from "node:path";
+import { ensureDirs, DATA_FILE, DB_DIR, BACKUPS_DIR, LEGACY_FILES } from "./paths.js";
 
 // Use global to survive Next.js dev hot-reload (module state resets on reload)
 if (!global._dbAdapter) global._dbAdapter = { instance: null, initPromise: null, logged: false };
@@ -52,7 +54,47 @@ async function trySqlJs() {
   }
 }
 
-async function initAdapter() {
+function hasLegacyData() {
+  return Object.values(LEGACY_FILES).some((file) => fs.existsSync(file));
+}
+
+function isLikelyCorruptDatabase() {
+  const walFile = `${DATA_FILE}-wal`;
+  if (!fs.existsSync(DATA_FILE) || fs.existsSync(walFile)) return false;
+
+  try {
+    const header = Buffer.alloc(32);
+    const fd = fs.openSync(DATA_FILE, "r");
+    try { fs.readSync(fd, header, 0, header.length, 0); } finally { fs.closeSync(fd); }
+    if (header.toString("ascii", 0, 15) !== "SQLite format 3") return false;
+
+    const pageSize = header.readUInt16BE(16) || 65536;
+    const pageCount = header.readUInt32BE(28);
+    return pageCount > 0 && pageCount * pageSize !== fs.statSync(DATA_FILE).size;
+  } catch {
+    return false;
+  }
+}
+
+function recoverCorruptDatabase() {
+  if (!hasLegacyData() || !isLikelyCorruptDatabase()) return false;
+
+  const stamp = new Date().toISOString().replace(/[.:]/g, "-");
+  const backupPath = path.join(BACKUPS_DIR, `corrupt-${stamp}.sqlite`);
+  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+  fs.renameSync(DATA_FILE, backupPath);
+  for (const suffix of ["-wal", "-shm"]) {
+    const sidecar = `${DATA_FILE}${suffix}`;
+    if (fs.existsSync(sidecar)) fs.renameSync(sidecar, `${backupPath}${suffix}`);
+  }
+
+  const marker = path.join(DB_DIR, ".migrated-from-json");
+  if (fs.existsSync(marker)) fs.unlinkSync(marker);
+  console.warn(`[DB] Corrupt SQLite archived at ${backupPath}; rebuilding from legacy data`);
+  return true;
+}
+
+async function initAdapter(recovered = false) {
   ensureDirs();
   // Order per runtime:
   //   Bun:  bun:sqlite → sql.js
@@ -61,6 +103,7 @@ async function initAdapter() {
   if (!adapter) adapter = await tryBetterSqlite();
   if (!adapter) adapter = await tryNodeSqlite();
   if (!adapter) adapter = await trySqlJs();
+  if (!adapter && !recovered && recoverCorruptDatabase()) return initAdapter(true);
   if (!adapter) throw new Error("[DB] No SQLite driver available (bun/better/node/sql.js all failed)");
 
   if (!state.logged) {

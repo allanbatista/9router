@@ -66,7 +66,7 @@ export async function handleChat(request, clientRawRequest = null) {
     const url = new URL(request.url);
     clientRawRequest = {
       endpoint: url.pathname,
-      body,
+      body: typeof structuredClone === "function" ? structuredClone(body) : JSON.parse(JSON.stringify(body)),
       headers: Object.fromEntries(request.headers.entries())
     };
   }

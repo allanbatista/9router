@@ -1,3 +1,5 @@
+import { getCachedTokens, getCacheCreationTokens, getPromptTokens } from "../../src/shared/utils/usageTokens.js";
+
 // Pricing rates for AI models — all rates in $/1M tokens
 //
 // Fallback order (first match wins):
@@ -414,9 +416,9 @@ export function calculateCostFromTokens(tokens, pricing) {
 
   let cost = 0;
 
-  const inputTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
-  const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
-  const cacheCreationTokens = tokens.cache_creation_input_tokens || 0;
+  const inputTokens = getPromptTokens(tokens);
+  const cachedTokens = getCachedTokens(tokens);
+  const cacheCreationTokens = getCacheCreationTokens(tokens);
   // prompt_tokens is cache-inclusive (see canonicalizeUsage): cached + cache_creation
   // are subsets, so subtract both to avoid charging them at the full input rate.
   const nonCachedInput = Math.max(0, inputTokens - cachedTokens - cacheCreationTokens);

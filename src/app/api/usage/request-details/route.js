@@ -1,6 +1,22 @@
 import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/usageDb";
 
+function getErrorLabel(detail) {
+  let value = detail?.error ?? detail?.response?.error;
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      value = parsed?.error?.message || parsed?.message || value;
+    } catch {}
+  }
+
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > 180 ? `${normalized.slice(0, 177)}…` : normalized;
+}
+
 /**
  * GET /api/usage/request-details
  * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate
@@ -84,7 +100,7 @@ export async function GET(request) {
     // metadata (model, tokens, latency, status) but drop message content.
     const redactedDetails = (result.details || []).map((d) => {
       const { cacheKey, sessionId, conversationId, rawSessionId } = extractIds(d);
-      const redacted = { ...d, cacheKey, sessionId, conversationId, rawSessionId };
+      const redacted = { ...d, cacheKey, sessionId, conversationId, rawSessionId, errorLabel: getErrorLabel(d) };
       for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
         if (redacted[key] !== undefined) {
           redacted[key] = { redacted: true };
