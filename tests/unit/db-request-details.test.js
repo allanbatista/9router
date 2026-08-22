@@ -4,6 +4,7 @@ import {
   getRequestDetails,
   getRequestDetailById,
   getDistinctProviders,
+  getDistinctMetadataValues,
   flushToDatabase,
   __test__,
 } from "../../src/lib/db/repos/requestDetailsRepo.js";
@@ -106,6 +107,12 @@ class InMemoryRequestDetailCollection {
         if (query.timestamp.$gte) filtered = filtered.filter((d) => new Date(d.timestamp) >= new Date(query.timestamp.$gte));
         if (query.timestamp.$lte) filtered = filtered.filter((d) => new Date(d.timestamp) <= new Date(query.timestamp.$lte));
       }
+      for (const [k, v] of Object.entries(query)) {
+        if (k.startsWith("agentMetadata.")) {
+          const subKey = k.slice("agentMetadata.".length);
+          filtered = filtered.filter((d) => d.agentMetadata && String(d.agentMetadata[subKey]) === String(v));
+        }
+      }
       return filtered.map((d) => this._clone(d));
     })();
     return this._makeQuery(p);
@@ -125,13 +132,26 @@ class InMemoryRequestDetailCollection {
     if (query.model) filtered = filtered.filter((d) => d.model === query.model);
     if (query.connectionId) filtered = filtered.filter((d) => d.connectionId === query.connectionId);
     if (query.status) filtered = filtered.filter((d) => d.status === query.status);
+    for (const [k, v] of Object.entries(query)) {
+      if (k.startsWith("agentMetadata.")) {
+        const subKey = k.slice("agentMetadata.".length);
+        filtered = filtered.filter((d) => d.agentMetadata && String(d.agentMetadata[subKey]) === String(v));
+      }
+    }
     return filtered.length;
   }
 
   async distinct(field) {
     const set = new Set();
     for (const d of this.docs) {
-      if (d[field]) set.add(d[field]);
+      if (field.startsWith("agentMetadata.")) {
+        const subKey = field.slice("agentMetadata.".length);
+        if (d.agentMetadata && d.agentMetadata[subKey] != null) {
+          set.add(d.agentMetadata[subKey]);
+        }
+      } else if (d[field]) {
+        set.add(d[field]);
+      }
     }
     return Array.from(set);
   }
@@ -293,6 +313,42 @@ describe("Request Details Observability Repository (V6)", () => {
       const providers = await getDistinctProviders();
       expect(providers).toEqual(["anthropic", "openai"]);
     });
+  describe("Agent Metadata persistence and filtering", () => {
+    it("persists and filters request details by agentMetadata", async () => {
+      await saveRequestDetail({
+        provider: "openai",
+        model: "gpt-4o",
+        status: "success",
+        agentMetadata: { os: "linux", "agent-name": "pi", hostname: "box-1" },
+      });
+
+      await saveRequestDetail({
+        provider: "anthropic",
+        model: "claude-3-5-sonnet",
+        status: "success",
+        agentMetadata: { os: "darwin", "agent-name": "claude", hostname: "box-2" },
+      });
+
+      await flushToDatabase();
+
+      const linuxResults = await getRequestDetails({ "agentMetadata.os": "linux" });
+      expect(linuxResults.details.length).toBe(1);
+      expect(linuxResults.details[0].provider).toBe("openai");
+      expect(linuxResults.details[0].agentMetadata.os).toBe("linux");
+      expect(linuxResults.details[0].agentMetadata["agent-name"]).toBe("pi");
+
+      const nestedFilterResults = await getRequestDetails({ agentMetadata: { "agent-name": "claude" } });
+      expect(nestedFilterResults.details.length).toBe(1);
+      expect(nestedFilterResults.details[0].provider).toBe("anthropic");
+      expect(nestedFilterResults.details[0].agentMetadata.os).toBe("darwin");
+
+      const distinctAgents = await getDistinctMetadataValues("agent-name");
+      expect(distinctAgents).toEqual(["claude", "pi"]);
+
+      const distinctOS = await getDistinctMetadataValues("os");
+      expect(distinctOS).toEqual(["darwin", "linux"]);
+    });
+  });
 
     it("paginates query results accurately", async () => {
       const page1 = await getRequestDetails({ page: 1, pageSize: 2 });

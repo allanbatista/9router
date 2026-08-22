@@ -149,6 +149,7 @@ class InMemoryUsageDailyCollection {
         byAccount: {},
         byApiKey: {},
         byEndpoint: {},
+        byAgentMetadata: {},
       };
       this.docs.set(dateKey, doc);
     }
@@ -165,6 +166,12 @@ class InMemoryUsageDailyCollection {
           if (!doc[group]) doc[group] = {};
           if (!doc[group][subKey]) doc[group][subKey] = {};
           doc[group][subKey][field] = (doc[group][subKey][field] || 0) + val;
+        } else if (parts.length === 4) {
+          const [group, dim, subKey, field] = parts;
+          if (!doc[group]) doc[group] = {};
+          if (!doc[group][dim]) doc[group][dim] = {};
+          if (!doc[group][dim][subKey]) doc[group][dim][subKey] = {};
+          doc[group][dim][subKey][field] = (doc[group][dim][subKey][field] || 0) + val;
         }
       }
     }
@@ -177,10 +184,15 @@ class InMemoryUsageDailyCollection {
           if (!doc[group]) doc[group] = {};
           if (!doc[group][subKey]) doc[group][subKey] = {};
           doc[group][subKey][field] = val;
+        } else if (parts.length === 4) {
+          const [group, dim, subKey, field] = parts;
+          if (!doc[group]) doc[group] = {};
+          if (!doc[group][dim]) doc[group][dim] = {};
+          if (!doc[group][dim][subKey]) doc[group][dim][subKey] = {};
+          doc[group][dim][subKey][field] = val;
         }
       }
     }
-
     return this._clone(doc);
   }
 }
@@ -332,6 +344,34 @@ describe("Usage Repository & Realtime Token Aggregation (V5)", () => {
       // Verify Meta lifetime counter
       expect(mockMeta.docs.get("totalRequestsLifetime").value).toBe(1);
     });
+    it("records agentMetadata in UsageHistory and atomically increments byAgentMetadata in UsageDaily", async () => {
+      const entry = {
+        timestamp: "2026-08-22T15:00:00Z",
+        provider: "anthropic",
+        model: "claude-3-5-sonnet",
+        tokens: { prompt_tokens: 150, completion_tokens: 75, cached_tokens: 25 },
+        cost: 0.0015,
+        agentMetadata: {
+          os: "linux",
+          "agent-name": "pi",
+          hostname: "worker-node-1",
+        },
+      };
+
+      await saveRequestUsage(entry);
+
+      const history = await getUsageHistory();
+      expect(history.length).toBe(1);
+
+      const dailyDoc = mockDaily.docs.get("2026-08-22");
+      expect(dailyDoc.byAgentMetadata).toBeDefined();
+      expect(dailyDoc.byAgentMetadata.os.linux.requests).toBe(1);
+      expect(dailyDoc.byAgentMetadata.os.linux.promptTokens).toBe(150);
+      expect(dailyDoc.byAgentMetadata.os.linux.completionTokens).toBe(75);
+      expect(dailyDoc.byAgentMetadata["agent-name"].pi.requests).toBe(1);
+      expect(dailyDoc.byAgentMetadata.hostname["worker-node-1"].requests).toBe(1);
+    });
+
 
     it("prevents duplicate usage records on exact duplicate replay", async () => {
       const entry = {
@@ -382,6 +422,33 @@ describe("Usage Repository & Realtime Token Aggregation (V5)", () => {
       expect(stats.totalRequests).toBe(2);
       expect(stats.byProvider.anthropic.requests).toBe(1);
       expect(stats.byProvider.openai.requests).toBe(1);
+    });
+
+    it("aggregates byAgentMetadata across daily summaries and recent history in getUsageStats", async () => {
+      const entryWithMeta = {
+        timestamp: "2026-08-22T12:00:00Z",
+        provider: "anthropic",
+        model: "claude-3-5-sonnet",
+        tokens: { prompt_tokens: 100, completion_tokens: 50 },
+        cost: 0.001,
+        agentMetadata: {
+          "agent-name": "pi",
+          os: "darwin",
+        },
+      };
+      await saveRequestUsage(entryWithMeta);
+
+      const statsAll = await getUsageStats("all");
+      expect(statsAll.byAgentMetadata).toBeDefined();
+      expect(statsAll.byAgentMetadata["agent-name"]).toBeDefined();
+      expect(statsAll.byAgentMetadata["agent-name"].pi.requests).toBe(1);
+      expect(statsAll.byAgentMetadata["agent-name"].pi.promptTokens).toBe(100);
+      expect(statsAll.byAgentMetadata.os.darwin.requests).toBe(1);
+
+      // Also test 24h / today live history aggregation
+      const statsToday = await getUsageStats("24h");
+      expect(statsToday.byAgentMetadata).toBeDefined();
+      expect(statsToday.byAgentMetadata["agent-name"].pi.requests).toBe(1);
     });
 
     it("returns bucketed series chart data", async () => {

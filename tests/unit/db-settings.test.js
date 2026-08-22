@@ -264,6 +264,7 @@ describe("Settings & Scoped KV Repositories (V3)", () => {
       expect(s.authMode).toBe("password");
       expect(s.stickyRoundRobinLimit).toBe(3);
       expect(s.capacityAdapter.vision.enabled).toBe(true);
+      expect(s.agentMetadataKeys).toEqual(["os", "hostname", "agent-name"]);
     });
 
     it("atomically merges updates and preserves unmentioned defaults", async () => {
@@ -297,6 +298,15 @@ describe("Settings & Scoped KV Repositories (V3)", () => {
       expect(raw.stickyRoundRobinLimit).toBeUndefined();
     });
 
+    it("updates and persists custom agentMetadataKeys", async () => {
+      const updated = await updateSettings({
+        agentMetadataKeys: ["os", "hostname", "agent-name", "client-mode"],
+      });
+      expect(updated.agentMetadataKeys).toEqual(["os", "hostname", "agent-name", "client-mode"]);
+
+      const fetched = await getSettings();
+      expect(fetched.agentMetadataKeys).toEqual(["os", "hostname", "agent-name", "client-mode"]);
+    });
     it("mergeWithDefaults handles outbound proxy inference", () => {
       const res = mergeWithDefaults({ outboundProxyUrl: "http://proxy.corp:8080" });
       expect(res.outboundProxyEnabled).toBe(true);

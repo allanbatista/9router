@@ -11,6 +11,15 @@ function maskApiKey(key) {
   return key.slice(0, 8) + "***";
 }
 
+function escapeSubdocKey(key) {
+  if (key == null) return "unknown";
+  return String(key).replace(/\./g, "_dot_").replace(/\$/g, "_dollar_");
+}
+
+function unescapeSubdocKey(key) {
+  if (key == null) return "";
+  return String(key).replace(/_dot_/g, ".").replace(/_dollar_/g, "$");
+}
 const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
 const CONN_CACHE_TTL_MS = 30 * 1000;
@@ -243,6 +252,19 @@ export async function saveRequestUsage(entry) {
       return;
     }
 
+    // Extract and normalize agentMetadata from entry
+    const rawMeta = entry.agentMetadata || entry.meta?.agentMetadata || {};
+    let normAgentMeta = {};
+    if (Array.isArray(rawMeta)) {
+      for (const item of rawMeta) {
+        if (item && item.key != null && item.value != null) {
+          normAgentMeta[String(item.key)] = item.value;
+        }
+      }
+    } else if (rawMeta && typeof rawMeta === "object") {
+      normAgentMeta = { ...rawMeta };
+    }
+
     // 1. Insert into UsageHistory
     await UsageHistory.create({
       timestamp: timestampDate,
@@ -256,7 +278,8 @@ export async function saveRequestUsage(entry) {
       cost,
       status: entry.status || "ok",
       tokens,
-      meta: {},
+      agentMetadata: normAgentMeta,
+      meta: entry.meta || {},
     });
 
     // 2. Atomic $inc in UsageDaily
@@ -322,6 +345,22 @@ export async function saveRequestUsage(entry) {
     setUpdates[`byEndpoint.${epKey}.endpoint`] = endpoint;
     setUpdates[`byEndpoint.${epKey}.rawModel`] = entry.model;
     setUpdates[`byEndpoint.${epKey}.provider`] = entry.provider;
+    // Aggregate byAgentMetadata
+    for (const [dimKey, dimVal] of Object.entries(normAgentMeta)) {
+      if (dimVal == null || String(dimVal).trim() === "") continue;
+      const rawValueStr = String(dimVal).trim();
+      const safeDim = escapeSubdocKey(dimKey);
+      const safeVal = escapeSubdocKey(rawValueStr);
+      const metaPath = `byAgentMetadata.${safeDim}.${safeVal}`;
+
+      incUpdates[`${metaPath}.requests`] = 1;
+      incUpdates[`${metaPath}.promptTokens`] = promptTokens;
+      incUpdates[`${metaPath}.completionTokens`] = completionTokens;
+      incUpdates[`${metaPath}.cachedTokens`] = cachedTokens;
+      incUpdates[`${metaPath}.cost`] = cost;
+      setUpdates[`${metaPath}.rawValue`] = rawValueStr;
+    }
+
 
     const dailyUpdate = { $inc: incUpdates };
     if (Object.keys(setUpdates).length > 0) {
@@ -456,6 +495,7 @@ export async function getUsageStats(period = "all") {
     byAccount: {},
     byApiKey: {},
     byEndpoint: {},
+    byAgentMetadata: {},
     last10Minutes: [],
     pending: pendingRequests,
     activeRequests: [],
@@ -641,6 +681,33 @@ export async function getUsageStats(period = "all") {
         stats.byEndpoint[epKey].cost += ep.cost || 0;
         if (dateKey > (stats.byEndpoint[epKey].lastUsed || "")) stats.byEndpoint[epKey].lastUsed = dateKey;
       }
+      for (const [dimKey, dimVals] of Object.entries(day.byAgentMetadata || {})) {
+        const unescapedDim = unescapeSubdocKey(dimKey);
+        if (!stats.byAgentMetadata[unescapedDim]) {
+          stats.byAgentMetadata[unescapedDim] = {};
+        }
+        for (const [valKey, v] of Object.entries(dimVals || {})) {
+          const rawValue = v.rawValue || unescapeSubdocKey(valKey);
+          if (!stats.byAgentMetadata[unescapedDim][rawValue]) {
+            stats.byAgentMetadata[unescapedDim][rawValue] = {
+              requests: 0,
+              promptTokens: 0,
+              completionTokens: 0,
+              cachedTokens: 0,
+              cost: 0,
+              rawValue,
+              lastUsed: dateKey,
+            };
+          }
+          const item = stats.byAgentMetadata[unescapedDim][rawValue];
+          item.requests += v.requests || 0;
+          item.promptTokens += v.promptTokens || 0;
+          item.completionTokens += v.completionTokens || 0;
+          item.cachedTokens += v.cachedTokens || 0;
+          item.cost += v.cost || 0;
+          if (dateKey > (item.lastUsed || "")) item.lastUsed = dateKey;
+        }
+      }
     }
 
     // Overlay precise lastUsed timestamps from history
@@ -668,6 +735,18 @@ export async function getUsageStats(period = "all") {
       const endpoint = e.endpoint || "Unknown";
       const endpointKey = `${endpoint}|${e.model}|${e.provider || "unknown"}`;
       if (stats.byEndpoint[endpointKey] && new Date(ts) > new Date(stats.byEndpoint[endpointKey].lastUsed)) stats.byEndpoint[endpointKey].lastUsed = ts;
+
+      if (e.agentMetadata && typeof e.agentMetadata === "object") {
+        for (const [dimKey, dimVal] of Object.entries(e.agentMetadata)) {
+          if (dimVal == null || String(dimVal).trim() === "") continue;
+          const rawValue = String(dimVal).trim();
+          if (stats.byAgentMetadata[dimKey] && stats.byAgentMetadata[dimKey][rawValue]) {
+            if (new Date(ts) > new Date(stats.byAgentMetadata[dimKey][rawValue].lastUsed)) {
+              stats.byAgentMetadata[dimKey][rawValue].lastUsed = ts;
+            }
+          }
+        }
+      }
     }
   } else {
     // 24h / today: live history
@@ -756,6 +835,34 @@ export async function getUsageStats(period = "all") {
       const epe = stats.byEndpoint[epKey];
       epe.requests++; epe.promptTokens += promptTokens; epe.completionTokens += completionTokens; epe.cachedTokens += cachedTokens; epe.cost += entryCost;
       if (new Date(tsStr) > new Date(epe.lastUsed)) epe.lastUsed = tsStr;
+
+      if (r.agentMetadata && typeof r.agentMetadata === "object") {
+        for (const [dimKey, dimVal] of Object.entries(r.agentMetadata)) {
+          if (dimVal == null || String(dimVal).trim() === "") continue;
+          const rawValue = String(dimVal).trim();
+          if (!stats.byAgentMetadata[dimKey]) {
+            stats.byAgentMetadata[dimKey] = {};
+          }
+          if (!stats.byAgentMetadata[dimKey][rawValue]) {
+            stats.byAgentMetadata[dimKey][rawValue] = {
+              requests: 0,
+              promptTokens: 0,
+              completionTokens: 0,
+              cachedTokens: 0,
+              cost: 0,
+              rawValue,
+              lastUsed: tsStr,
+            };
+          }
+          const ame = stats.byAgentMetadata[dimKey][rawValue];
+          ame.requests++;
+          ame.promptTokens += promptTokens;
+          ame.completionTokens += completionTokens;
+          ame.cachedTokens += cachedTokens;
+          ame.cost += entryCost;
+          if (new Date(tsStr) > new Date(ame.lastUsed)) ame.lastUsed = tsStr;
+        }
+      }
     }
   }
 

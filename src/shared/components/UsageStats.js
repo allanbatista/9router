@@ -126,6 +126,7 @@ function getGroupKey(item, keyField) {
     case "accountName": return item.accountName || `Account ${item.connectionId?.slice(0, 8)}...` || "Unknown Account";
     case "keyName": return item.keyName || "Unknown Key";
     case "endpoint": return item.endpoint || "Unknown Endpoint";
+    case "rawValue": return item.rawValue || "Unknown Value";
     default: return item[keyField] || "Unknown";
   }
 }
@@ -191,8 +192,13 @@ const ENDPOINT_COLUMNS = [
   { field: "requests", label: "Requests", align: "right" },
   { field: "lastUsed", label: "Last Used", align: "right" },
 ];
+const METADATA_COLUMNS = [
+  { field: "rawValue", label: "Value" },
+  { field: "requests", label: "Requests", align: "right" },
+  { field: "lastUsed", label: "Last Used", align: "right" },
+];
 
-const TABLE_OPTIONS = [
+const BASE_TABLE_OPTIONS = [
   { value: "model", label: "Usage by Model" },
   { value: "account", label: "Usage by Account" },
   { value: "apiKey", label: "Usage by API Key" },
@@ -221,11 +227,22 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const [viewMode, setViewMode] = useState("costs");
   const [providers, setProviders] = useState([]);
   const [periodLocal, setPeriodLocal] = useState("today");
+  const [metadataKeys, setMetadataKeys] = useState(["os", "hostname", "agent-name"]);
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
   const period = periodProp ?? periodLocal;
   const setPeriod = setPeriodProp ?? setPeriodLocal;
 
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.agentMetadataKeys && Array.isArray(data.agentMetadataKeys)) {
+          setMetadataKeys(data.agentMetadataKeys);
+        }
+      })
+      .catch(() => {});
+  }, []);
   // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
   useEffect(() => {
@@ -323,9 +340,47 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     router.replace(`?${params.toString()}`, { scroll: false });
   }, [searchParams, router]);
 
+  // Combined table options including metadata dimensions
+  const tableOptions = useMemo(() => {
+    const options = [...BASE_TABLE_OPTIONS];
+    const activeDims = new Set(metadataKeys);
+    if (stats?.byAgentMetadata) {
+      Object.keys(stats.byAgentMetadata).forEach((k) => activeDims.add(k));
+    }
+    activeDims.forEach((dim) => {
+      const label = `Usage by ${dim.charAt(0).toUpperCase() + dim.slice(1).replace(/-/g, " ")}`;
+      options.push({ value: `meta:${dim}`, label });
+    });
+    return options;
+  }, [metadataKeys, stats?.byAgentMetadata]);
+
   // Compute active table data
   const activeTableConfig = useMemo(() => {
     if (!stats) return null;
+    if (tableView.startsWith("meta:")) {
+      const dimKey = tableView.slice("meta:".length);
+      const dimData = stats.byAgentMetadata?.[dimKey] || {};
+      return {
+        columns: METADATA_COLUMNS,
+        groupedData: groupDataByKey(sortData(dimData, {}, sortBy, sortOrder), "rawValue"),
+        storageKey: `usage-stats:expanded-meta-${dimKey}`,
+        emptyMessage: `No usage recorded for metadata dimension '${dimKey}' in the selected period.`,
+        renderSummaryCells: (group) => (
+          <>
+            <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
+            <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+          </>
+        ),
+        renderDetailCells: (item) => (
+          <>
+            <td className="px-6 py-3 font-medium font-mono text-sm">{item.rawValue}</td>
+            <td className="px-6 py-3 text-right">{fmt(item.requests)}</td>
+            <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(item.lastUsed)}</td>
+          </>
+        ),
+      };
+    }
+
     switch (tableView) {
       case "model": {
         const pendingMap = stats.pending?.byModel || {};
@@ -499,7 +554,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
             className="w-full rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-main focus:outline-none focus:ring-2 focus:ring-primary/50 sm:w-auto"
             style={{ colorScheme: 'auto' }}
           >
-            {TABLE_OPTIONS.map((opt) => (
+            {tableOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>

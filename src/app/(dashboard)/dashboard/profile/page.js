@@ -642,6 +642,100 @@ export default function ProfilePage() {
       console.error("Failed to update enableObservability:", err);
     }
   };
+  const [newMetaKey, setNewMetaKey] = useState("");
+  const [metaKeyLoading, setMetaKeyLoading] = useState(false);
+  const [metaKeyStatus, setMetaKeyStatus] = useState({ type: "", message: "" });
+
+  const handleAddMetaKey = async (e) => {
+    if (e) e.preventDefault();
+    const key = newMetaKey.trim().toLowerCase();
+    if (!key) {
+      setMetaKeyStatus({ type: "error", message: "Key cannot be empty" });
+      return;
+    }
+    const validKeyRegex = /^[a-zA-Z0-9_-]+$/;
+    if (!validKeyRegex.test(key)) {
+      setMetaKeyStatus({ type: "error", message: "Invalid characters. Use only letters, numbers, hyphens, and underscores." });
+      return;
+    }
+    const currentKeys = settings.agentMetadataKeys || ["os", "hostname", "agent-name"];
+    if (currentKeys.includes(key)) {
+      setMetaKeyStatus({ type: "error", message: `Key '${key}' already exists.` });
+      return;
+    }
+    const updatedKeys = [...currentKeys, key];
+    setMetaKeyLoading(true);
+    setMetaKeyStatus({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentMetadataKeys: updatedKeys }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSettings((prev) => ({ ...prev, ...data }));
+        setNewMetaKey("");
+        setMetaKeyStatus({ type: "success", message: "Metadata key added." });
+      } else {
+        setMetaKeyStatus({ type: "error", message: data.error || "Failed to add metadata key." });
+      }
+    } catch {
+      setMetaKeyStatus({ type: "error", message: "Network error saving metadata key." });
+    } finally {
+      setMetaKeyLoading(false);
+    }
+  };
+
+  const handleRemoveMetaKey = async (keyToRemove) => {
+    const currentKeys = settings.agentMetadataKeys || ["os", "hostname", "agent-name"];
+    const updatedKeys = currentKeys.filter((k) => k !== keyToRemove);
+    setMetaKeyLoading(true);
+    setMetaKeyStatus({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentMetadataKeys: updatedKeys }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSettings((prev) => ({ ...prev, ...data }));
+        setMetaKeyStatus({ type: "success", message: `Key '${keyToRemove}' removed.` });
+      } else {
+        setMetaKeyStatus({ type: "error", message: data.error || "Failed to remove metadata key." });
+      }
+    } catch {
+      setMetaKeyStatus({ type: "error", message: "Network error removing metadata key." });
+    } finally {
+      setMetaKeyLoading(false);
+    }
+  };
+
+  const handleResetMetaKeys = async () => {
+    const defaultKeys = ["os", "hostname", "agent-name"];
+    setMetaKeyLoading(true);
+    setMetaKeyStatus({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentMetadataKeys: defaultKeys }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSettings((prev) => ({ ...prev, ...data }));
+        setMetaKeyStatus({ type: "success", message: "Metadata keys reset to defaults." });
+      } else {
+        setMetaKeyStatus({ type: "error", message: data.error || "Failed to reset metadata keys." });
+      }
+    } catch {
+      setMetaKeyStatus({ type: "error", message: "Network error resetting metadata keys." });
+    } finally {
+      setMetaKeyLoading(false);
+    }
+  };
+
 
   const reloadSettings = async () => {
     try {
@@ -1633,6 +1727,82 @@ export default function ProfilePage() {
               onChange={updateObservabilityEnabled}
               disabled={loading}
             />
+          </div>
+
+          <div className="mt-6 pt-6 border-t border-black/5 dark:border-white/5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium text-sm sm:text-base">Indexed Metadata Keys</p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  Request attributes from <code className="font-mono text-xs">_agent_metadata</code> indexed for filtering and usage metrics
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleResetMetaKeys}
+                disabled={loading || metaKeyLoading}
+                className="text-xs"
+              >
+                Reset to defaults
+              </Button>
+            </div>
+
+            {/* Chips list */}
+            <div className="flex flex-wrap gap-2" role="list" aria-label="Indexed metadata keys">
+              {(settings.agentMetadataKeys || ["os", "hostname", "agent-name"]).length === 0 ? (
+                <p className="text-xs text-text-muted italic">No metadata keys configured.</p>
+              ) : (
+                (settings.agentMetadataKeys || ["os", "hostname", "agent-name"]).map((key) => (
+                  <div
+                    key={key}
+                    role="listitem"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-2 border border-border text-xs font-mono text-text-main shadow-xs"
+                  >
+                    <span>{key}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveMetaKey(key)}
+                      disabled={metaKeyLoading}
+                      className="text-text-muted hover:text-red-500 transition-colors p-0.5 rounded-full hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer disabled:opacity-50"
+                      aria-label={`Remove metadata key ${key}`}
+                    >
+                      <span className="material-symbols-outlined text-[14px] leading-none block">close</span>
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Add key input form */}
+            <form onSubmit={handleAddMetaKey} className="flex gap-2 items-center">
+              <input
+                type="text"
+                value={newMetaKey}
+                onChange={(e) => setNewMetaKey(e.target.value)}
+                placeholder="Add metadata key (e.g. mode, cwd, tz)..."
+                disabled={metaKeyLoading}
+                className="h-9 flex-1 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+              />
+              <Button
+                type="submit"
+                size="sm"
+                disabled={metaKeyLoading || !newMetaKey.trim()}
+                icon={metaKeyLoading ? "progress_activity" : "add"}
+                className={metaKeyLoading ? "animate-pulse" : ""}
+              >
+                Add
+              </Button>
+            </form>
+
+            {metaKeyStatus.message && (
+              <p
+                role="alert"
+                className={`text-xs ${metaKeyStatus.type === "error" ? "text-red-500" : "text-green-500"}`}
+              >
+                {metaKeyStatus.message}
+              </p>
+            )}
           </div>
         </Card>
 

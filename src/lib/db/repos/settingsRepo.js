@@ -44,6 +44,7 @@ const DEFAULT_SETTINGS = {
   observabilityBatchSize: 20,
   observabilityFlushIntervalMs: 5000,
   observabilityMaxJsonSize: 5,
+  agentMetadataKeys: ["os", "hostname", "agent-name"],
   outboundProxyEnabled: false,
   outboundProxyUrl: "",
   outboundNoProxy: "",

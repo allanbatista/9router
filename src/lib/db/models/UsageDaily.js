@@ -14,6 +14,7 @@ export const UsageDailySchema = new Schema(
     byAccount: { type: Schema.Types.Mixed, default: () => ({}) },
     byApiKey: { type: Schema.Types.Mixed, default: () => ({}) },
     byEndpoint: { type: Schema.Types.Mixed, default: () => ({}) },
+    byAgentMetadata: { type: Schema.Types.Mixed, default: () => ({}) },
   },
   {
     collection: "usageDaily",

@@ -5,7 +5,12 @@ const { Schema } = mongoose;
 export const SettingSchema = new Schema(
   {
     _id: { type: String, default: "global" },
-    data: { type: Schema.Types.Mixed, default: () => ({}) },
+    data: {
+      type: Schema.Types.Mixed,
+      default: () => ({
+        agentMetadataKeys: ["os", "hostname", "agent-name"],
+      }),
+    },
     updatedAt: { type: Date, default: Date.now },
   },
   {

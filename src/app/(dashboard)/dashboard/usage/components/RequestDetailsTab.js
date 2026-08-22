@@ -211,13 +211,20 @@ export default function RequestDetailsTab() {
   const [loading, setLoading] = useState(false);
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [activeDrawerTab, setActiveDrawerTab] = useState("preview"); // "preview" | "metadata" | "raw"
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [providers, setProviders] = useState([]);
   const [providerNameCache, setProviderNameCache] = useState(null);
   const [connectionCache, setConnectionCache] = useState(null);
+  const [metadataKeys, setMetadataKeys] = useState(["os", "hostname", "agent-name"]);
+  const [metadataValues, setMetadataValues] = useState({});
+  const [statusPreset, setStatusPreset] = useState("all"); // "all" | "errors" | "streaming" | "success"
   const [filters, setFilters] = useState({
     provider: "",
+    status: "",
     startDate: "",
-    endDate: ""
+    endDate: "",
+    metadata: {},
   });
 
   const fetchProviders = useCallback(async () => {
@@ -230,8 +237,24 @@ export default function RequestDetailsTab() {
       setProviderNameCache(pCache.providerNameCache);
       const cCache = await fetchConnectionNames();
       setConnectionCache(cCache);
+      const settingsRes = await fetch("/api/settings");
+      if (settingsRes.ok) {
+        const sData = await settingsRes.json();
+        if (Array.isArray(sData.agentMetadataKeys)) {
+          setMetadataKeys(sData.agentMetadataKeys);
+          sData.agentMetadataKeys.forEach(async (k) => {
+            try {
+              const valRes = await fetch(`/api/usage/metadata-values?key=${encodeURIComponent(k)}`);
+              if (valRes.ok) {
+                const valData = await valRes.json();
+                setMetadataValues((prev) => ({ ...prev, [k]: valData.values || [] }));
+              }
+            } catch {}
+          });
+        }
+      }
     } catch (error) {
-      console.error("Failed to fetch providers:", error);
+      console.error("Failed to fetch providers or settings:", error);
     }
   }, []);
 
@@ -243,8 +266,14 @@ export default function RequestDetailsTab() {
         pageSize: pagination.pageSize.toString()
       });
       if (filters.provider) params.append("provider", filters.provider);
+      if (filters.status) params.append("status", filters.status);
       if (filters.startDate) params.append("startDate", filters.startDate);
       if (filters.endDate) params.append("endDate", filters.endDate);
+      if (filters.metadata) {
+        for (const [k, v] of Object.entries(filters.metadata)) {
+          if (v) params.append(`agentMetadata[${k}]`, v);
+        }
+      }
 
       const res = await fetch(`/api/usage/request-details?${params}`);
       const data = await res.json();
@@ -268,13 +297,20 @@ export default function RequestDetailsTab() {
 
   const handleViewDetail = async (detail) => {
     setSelectedDetail(detail);
+    setActiveDrawerTab("preview");
     setIsDrawerOpen(true);
     try {
       const res = await fetch(`/api/usage/request-details/${encodeURIComponent(detail.id)}`);
       if (!res.ok) return;
       const data = await res.json();
       if (data.detail) {
-        setSelectedDetail((prev) => ({ ...data.detail, cacheKey: data.detail.cacheKey ?? prev?.cacheKey, rawSessionId: data.detail.rawSessionId ?? prev?.rawSessionId, sessionId: data.detail.sessionId ?? prev?.sessionId, conversationId: data.detail.conversationId ?? prev?.conversationId }));
+        setSelectedDetail((prev) => ({
+          ...data.detail,
+          cacheKey: data.detail.cacheKey ?? prev?.cacheKey,
+          rawSessionId: data.detail.rawSessionId ?? prev?.rawSessionId,
+          sessionId: data.detail.sessionId ?? prev?.sessionId,
+          conversationId: data.detail.conversationId ?? prev?.conversationId
+        }));
       }
     } catch {}
   };
@@ -288,7 +324,17 @@ export default function RequestDetailsTab() {
   };
 
   const handleClearFilters = () => {
-    setFilters({ provider: "", startDate: "", endDate: "" });
+    setStatusPreset("all");
+    setFilters({ provider: "", status: "", startDate: "", endDate: "", metadata: {} });
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  const handlePresetChange = (preset) => {
+    setStatusPreset(preset);
+    setFilters(prev => ({
+      ...prev,
+      status: preset === "errors" ? "error" : preset === "streaming" ? "streaming" : preset === "success" ? "success" : ""
+    }));
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
@@ -302,170 +348,415 @@ export default function RequestDetailsTab() {
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
+  const handleMetadataFilterChange = (key, value) => {
+    setFilters(prev => ({
+      ...prev,
+      metadata: {
+        ...prev.metadata,
+        [key]: value,
+      },
+    }));
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  const removeFilterBadge = (type, key = null) => {
+    if (type === "provider") setFilters(prev => ({ ...prev, provider: "" }));
+    if (type === "status") { setStatusPreset("all"); setFilters(prev => ({ ...prev, status: "" })); }
+    if (type === "startDate") setFilters(prev => ({ ...prev, startDate: "" }));
+    if (type === "endDate") setFilters(prev => ({ ...prev, endDate: "" }));
+    if (type === "metadata" && key) {
+      setFilters(prev => {
+        const nextMeta = { ...prev.metadata };
+        delete nextMeta[key];
+        return { ...prev, metadata: nextMeta };
+      });
+    }
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  const activeFiltersCount = (filters.provider ? 1 : 0) +
+    (filters.status ? 1 : 0) +
+    (filters.startDate ? 1 : 0) +
+    (filters.endDate ? 1 : 0) +
+    Object.values(filters.metadata || {}).filter(Boolean).length;
+
+  // Extract conversation messages for preview
+  const extractMessages = (detail) => {
+    if (!detail) return [];
+    const rq = detail.request || {};
+    const pr = detail.providerRequest || {};
+    const rawMsgs = rq.messages || rq.contents || pr.messages || pr.contents || [];
+    const out = [];
+    if (Array.isArray(rawMsgs)) {
+      for (const m of rawMsgs) {
+        const role = m.role || (m.parts ? "user" : "user");
+        let text = "";
+        if (typeof m.content === "string") text = m.content;
+        else if (Array.isArray(m.content)) {
+          text = m.content.map(c => typeof c === "string" ? c : c.text || JSON.stringify(c)).join("\n");
+        } else if (Array.isArray(m.parts)) {
+          text = m.parts.map(p => typeof p === "string" ? p : p.text || JSON.stringify(p)).join("\n");
+        } else if (m.text) text = m.text;
+        out.push({ role, text: text || "[Empty or non-text message]" });
+      }
+    }
+    // Append assistant final response
+    const resp = detail.response || {};
+    if (resp.content && resp.content !== "[No content]") {
+      out.push({ role: "assistant", text: resp.content, thinking: resp.thinking });
+    } else if (resp.error) {
+      out.push({ role: "assistant", text: `[Error: ${resp.error}]`, isError: true });
+    }
+    return out;
+  };
+
   return (
-    <div className="flex min-w-0 flex-col gap-6">
-      <Card padding="md">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <div className="flex min-w-0 flex-col gap-2">
-            <label htmlFor="provider-filter" className="text-sm font-medium text-text-main">Provider</label>
-            <select
-              id="provider-filter"
-              value={filters.provider}
-              onChange={(e) => handleProviderChange(e.target.value)}
+    <div className="flex min-w-0 flex-col gap-5">
+      {/* Modern Compact Filter Bar */}
+      <Card padding="md" className="space-y-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {/* Status Quick Presets */}
+          <div className="flex items-center gap-1.5 p-1 rounded-xl bg-black/[0.03] dark:bg-white/[0.04] border border-black/5 dark:border-white/5">
+            <button
+              type="button"
+              onClick={() => handlePresetChange("all")}
               className={cn(
-                "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
-                "text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20",
-                "w-full min-w-0 cursor-pointer"
+                "px-3 py-1.5 text-xs font-semibold rounded-lg transition-all",
+                statusPreset === "all"
+                  ? "bg-surface text-text-main shadow-sm"
+                  : "text-text-muted hover:text-text-main"
               )}
-              style={{ colorScheme: 'auto' }}
             >
-              <option value="">All Providers</option>
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          
-          <div className="flex min-w-0 flex-col gap-2">
-            <label htmlFor="start-date-filter" className="text-sm font-medium text-text-main">Start Date</label>
-            <input
-              id="start-date-filter"
-              type="datetime-local"
-              value={filters.startDate}
-              onChange={(e) => handleDateChange("startDate", e.target.value)}
+              All Requests
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePresetChange("errors")}
               className={cn(
-                "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
-                "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
+                "px-3 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5",
+                statusPreset === "errors"
+                  ? "bg-red-500/15 text-red-600 dark:text-red-400 shadow-sm"
+                  : "text-text-muted hover:text-red-600 dark:hover:text-red-400"
               )}
-            />
+            >
+              <span className="w-2 h-2 rounded-full bg-red-500" />
+              Errors Only
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePresetChange("streaming")}
+              className={cn(
+                "px-3 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5",
+                statusPreset === "streaming"
+                  ? "bg-sky-500/15 text-sky-600 dark:text-sky-400 shadow-sm"
+                  : "text-text-muted hover:text-sky-600 dark:hover:text-sky-400"
+              )}
+            >
+              <span className="material-symbols-outlined text-[14px]">stream</span>
+              Streaming
+            </button>
           </div>
 
-          <div className="flex min-w-0 flex-col gap-2">
-            <label htmlFor="end-date-filter" className="text-sm font-medium text-text-main">End Date</label>
-            <input
-              id="end-date-filter"
-              type="datetime-local"
-              value={filters.endDate}
-              onChange={(e) => handleDateChange("endDate", e.target.value)}
-              className={cn(
-                "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
-                "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2">
+            <Button
+              variant={showAdvancedFilters ? "secondary" : "outline"}
+              size="sm"
+              icon="tune"
+              onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+              className="text-xs"
+            >
+              {showAdvancedFilters ? "Hide Filters" : "Filters"}
+              {activeFiltersCount > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.2 rounded-full bg-primary/20 text-primary font-bold text-[10px]">
+                  {activeFiltersCount}
+                </span>
               )}
-            />
-          </div>
-          
-          <div className="flex min-w-0 flex-col gap-1 sm:col-span-1">
-            <span className="hidden text-sm font-medium text-text-main opacity-0 lg:block" aria-hidden="true">Refresh</span>
+            </Button>
             <Button
               variant="outline"
+              size="sm"
               onClick={() => fetchDetails()}
               disabled={loading}
               icon={loading ? "progress_activity" : "refresh"}
-              className={loading ? "animate-pulse" : ""}
+              className={cn("text-xs", loading ? "animate-pulse" : "")}
             >
               Refresh
             </Button>
-          </div>
-          <div className="flex min-w-0 flex-col gap-1 sm:col-span-1">
-            <span className="hidden text-sm font-medium text-text-main opacity-0 lg:block" aria-hidden="true">Clear</span>
-            <Button 
-              variant="ghost" 
-              onClick={handleClearFilters}
-              disabled={!filters.provider && !filters.startDate && !filters.endDate}
-            >
-              Clear Filters
-            </Button>
+            {activeFiltersCount > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearFilters}
+                className="text-xs text-text-muted hover:text-red-500"
+              >
+                Clear All
+              </Button>
+            )}
           </div>
         </div>
+
+        {/* Collapsible Advanced Filters Tray */}
+        {showAdvancedFilters && (
+          <div className="pt-3 border-t border-black/5 dark:border-white/5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 animate-in fade-in duration-200">
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="provider-filter" className="text-xs font-semibold text-text-muted uppercase tracking-wider">Provider</label>
+              <select
+                id="provider-filter"
+                value={filters.provider}
+                onChange={(e) => handleProviderChange(e.target.value)}
+                className="h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-xs text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20 cursor-pointer"
+              >
+                <option value="">All Providers</option>
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {metadataKeys.map((metaKey) => (
+              <div key={metaKey} className="flex flex-col gap-1.5">
+                <label htmlFor={`meta-filter-${metaKey}`} className="text-xs font-semibold text-text-muted uppercase tracking-wider capitalize">
+                  {metaKey.replace(/-/g, " ")}
+                </label>
+                <input
+                  id={`meta-filter-${metaKey}`}
+                  type="text"
+                  list={`meta-datalist-${metaKey}`}
+                  value={filters.metadata[metaKey] || ""}
+                  onChange={(e) => handleMetadataFilterChange(metaKey, e.target.value)}
+                  placeholder={`Filter ${metaKey}...`}
+                  className="h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-xs text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+                {metadataValues[metaKey] && metadataValues[metaKey].length > 0 && (
+                  <datalist id={`meta-datalist-${metaKey}`}>
+                    {metadataValues[metaKey].map((val) => (
+                      <option key={val} value={val} />
+                    ))}
+                  </datalist>
+                )}
+              </div>
+            ))}
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="start-date-filter" className="text-xs font-semibold text-text-muted uppercase tracking-wider">Start Date</label>
+              <input
+                id="start-date-filter"
+                type="datetime-local"
+                value={filters.startDate}
+                onChange={(e) => handleDateChange("startDate", e.target.value)}
+                className="h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-xs text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="end-date-filter" className="text-xs font-semibold text-text-muted uppercase tracking-wider">End Date</label>
+              <input
+                id="end-date-filter"
+                type="datetime-local"
+                value={filters.endDate}
+                onChange={(e) => handleDateChange("endDate", e.target.value)}
+                className="h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-xs text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Active Filter Chips */}
+        {activeFiltersCount > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-black/5 dark:border-white/5 text-xs">
+            <span className="text-text-muted text-[11px] font-medium mr-1">Active filters:</span>
+            {filters.provider && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/10 text-primary border border-primary/20">
+                Provider: <strong>{getProviderName(filters.provider, providerNameCache)}</strong>
+                <button type="button" onClick={() => removeFilterBadge("provider")} className="hover:opacity-75 ml-0.5">✕</button>
+              </span>
+            )}
+            {filters.status && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-black/5 dark:bg-white/5 border border-border">
+                Status: <strong>{filters.status}</strong>
+                <button type="button" onClick={() => removeFilterBadge("status")} className="hover:opacity-75 ml-0.5">✕</button>
+              </span>
+            )}
+            {Object.entries(filters.metadata || {}).map(([k, v]) => v ? (
+              <span key={k} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 font-mono">
+                {k}: <strong>{v}</strong>
+                <button type="button" onClick={() => removeFilterBadge("metadata", k)} className="hover:opacity-75 ml-0.5">✕</button>
+              </span>
+            ) : null)}
+            {filters.startDate && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-black/5 dark:bg-white/5 border border-border">
+                From: {filters.startDate}
+                <button type="button" onClick={() => removeFilterBadge("startDate")} className="hover:opacity-75 ml-0.5">✕</button>
+              </span>
+            )}
+            {filters.endDate && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-black/5 dark:bg-white/5 border border-border">
+                To: {filters.endDate}
+                <button type="button" onClick={() => removeFilterBadge("endDate")} className="hover:opacity-75 ml-0.5">✕</button>
+              </span>
+            )}
+          </div>
+        )}
       </Card>
+
+      {/* Clean, High-Hierarchy Request Table */}
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[980px]">
+          <table className="w-full min-w-[920px]">
             <thead>
-              <tr className="border-b border-black/5 dark:border-white/5">
-                <th className="text-left p-4 text-sm font-semibold text-text-main">Request</th>
-                <th className="text-left p-4 text-sm font-semibold text-text-main">Model</th>
-                <th className="text-left p-4 text-sm font-semibold text-text-main">Tokens</th>
-                <th className="text-left p-4 text-sm font-semibold text-text-main">Latency</th>
-                <th className="text-center p-4 text-sm font-semibold text-text-main">Action</th>
+              <tr className="border-b border-black/5 dark:border-white/5 bg-black/[0.015] dark:bg-white/[0.015] text-xs uppercase tracking-wider text-text-muted font-semibold">
+                <th className="text-left py-3.5 px-4">Status & Time</th>
+                <th className="text-left py-3.5 px-4">Origin / Agent</th>
+                <th className="text-left py-3.5 px-4">Model & Provider</th>
+                <th className="text-left py-3.5 px-4">Tokens</th>
+                <th className="text-left py-3.5 px-4">Latency</th>
+                <th className="text-center py-3.5 px-4 w-24">Action</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-black/5 dark:divide-white/5 text-sm">
               {loading ? (
                 <tr>
-                  <td colSpan="5" className="p-8 text-center text-text-muted">
-                    <div className="flex items-center justify-center gap-2">
-                      <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
-                      Loading...
+                  <td colSpan="6" className="p-12 text-center text-text-muted">
+                    <div className="flex items-center justify-center gap-2 text-sm font-medium">
+                      <span className="material-symbols-outlined animate-spin text-[22px]">progress_activity</span>
+                      Loading requests...
                     </div>
                   </td>
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="p-8 text-center text-text-muted">
-                    No request details found
+                  <td colSpan="6" className="p-12 text-center text-text-muted">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <span className="material-symbols-outlined text-[36px] text-text-muted/40">inbox</span>
+                      <p className="font-medium text-sm">No request details found</p>
+                      {activeFiltersCount > 0 && (
+                        <Button variant="outline" size="sm" onClick={handleClearFilters} className="mt-2 text-xs">
+                          Clear Filters
+                        </Button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ) : (
                 details.map((detail, index) => {
                   const input = getInputTokens(detail.tokens);
                   const cached = getCachedTokens(detail.tokens);
-                  const diff = Math.max(0, input - cached);
                   const output = detail.tokens?.completion_tokens ?? 0;
-                  const cacheKey = getCacheKey(detail);
-                  const rawSessionId = getRawSessionId(detail);
                   const isSuccess = detail.status === "success" || detail.status === "ok";
-                  const isError = detail.status && !isSuccess && detail.status !== "pending";
-                  const badgeVariant = isSuccess ? "success" : isError ? "error" : "default";
+                  const isStreaming = detail.status === "streaming";
+                  const isError = detail.status && !isSuccess && !isStreaming;
+                  const badgeVariant = isSuccess ? "success" : isError ? "error" : isStreaming ? "default" : "default";
+                  const meta = detail.agentMetadata || detail.data?.agentMetadata || {};
+                  const agentName = meta["agent-name"] || meta.agent || null;
+                  const hostname = meta.hostname || null;
+                  const osName = meta.os || null;
+
                   return (
-                  <tr
-                    key={`${detail.id}-${index}`}
-                    className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
-                  >
-                    <td className="p-4 align-top">
-                      <div className="flex min-w-0 flex-col gap-1.5 max-w-[260px]">
-                        <div className="font-mono text-xs break-all leading-tight text-text-main" title={detail.id}>{detail.id}</div>
-                        <div className="font-mono text-[10px] break-all leading-tight text-text-muted" title={cacheKey || ""}>ck: {cacheKey || "—"}</div>
-                        <div className="font-mono text-[10px] break-all leading-tight text-text-muted" title={rawSessionId || ""}>session: {rawSessionId || "—"}</div>
-                        <div className="font-mono text-[10px] leading-none text-text-muted">{formatTimestamp(detail.timestamp)}</div>
-                        <div><Badge variant={badgeVariant} size="sm" dot>{detail.status || "unknown"}</Badge></div>
-                        {detail.errorLabel ? <div className="text-[10px] leading-tight text-red-600 dark:text-red-400" title={detail.errorLabel}>{detail.errorLabel}</div> : null}
-                      </div>
-                    </td>
-                    <td className="max-w-[280px] p-4 text-sm align-top">
-                      <div className="truncate font-mono text-[11px] leading-none text-text-muted">{getProviderName(detail.provider, providerNameCache)}</div>
-                      <div className="truncate font-mono text-sm text-text-main">{detail.model}</div>
-                      <div className="truncate font-mono text-xs text-text-muted" title={detail.connectionId || ""}>{getConnectionName(detail.connectionId, connectionCache)}</div>
-                    </td>
-                    <td className="p-4 text-sm font-mono align-top">
-                      <div className="whitespace-nowrap">
-                        <span className="text-sky-600 dark:text-sky-400">{input.toLocaleString()}</span>
-                        <span className="text-text-muted"> - </span>
-                        <span className="text-amber-600 dark:text-amber-400">{cached.toLocaleString()}</span>
-                        <span className="text-text-muted"> = </span>
-                        <span className="font-semibold text-text-main">{diff.toLocaleString()}</span>
-                        <span className="text-text-muted"> / </span>
-                        <span className="text-violet-600 dark:text-violet-400">{output.toLocaleString()}</span>
-                      </div>
-                    </td>
-                    <td className="p-4 text-sm text-text-muted align-top">
-                      <div className="flex flex-col gap-0.5">
-                        <div>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
-                        <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
-                      </div>
-                    </td>
-                    <td className="p-4 text-center align-top">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleViewDetail(detail)}
-                      >
-                        Detail
-                      </Button>
-                    </td>
-                  </tr>
+                    <tr
+                      key={`${detail.id}-${index}`}
+                      onClick={() => handleViewDetail(detail)}
+                      className="hover:bg-black/[0.025] dark:hover:bg-white/[0.025] cursor-pointer transition-colors group"
+                    >
+                      {/* Status & Time */}
+                      <td className="py-3.5 px-4 align-top">
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-2">
+                            <Badge variant={badgeVariant} size="sm" dot>
+                              {detail.status || "unknown"}
+                            </Badge>
+                            <span className="text-[11px] font-mono text-text-muted">
+                              {formatTimestamp(detail.timestamp)}
+                            </span>
+                          </div>
+                          <div className="font-mono text-[10px] text-text-muted/70 flex items-center gap-1 group-hover:text-text-muted">
+                            <span>ID: {String(detail.id).slice(0, 8)}…</span>
+                          </div>
+                          {detail.errorLabel && (
+                            <span className="text-[10px] text-red-600 dark:text-red-400 font-medium truncate max-w-[220px]" title={detail.errorLabel}>
+                              {detail.errorLabel}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Origin / Agent */}
+                      <td className="py-3.5 px-4 align-top max-w-[220px]">
+                        {agentName || hostname ? (
+                          <div className="flex flex-col gap-0.5">
+                            <span className="font-semibold text-text-main text-xs truncate">
+                              {agentName ? `${agentName}` : "Generic Agent"}
+                              {hostname ? <span className="text-text-muted font-normal"> @ {hostname}</span> : null}
+                            </span>
+                            <span className="font-mono text-[10px] text-text-muted truncate">
+                              {osName || "—"} {meta.mode ? `· ${meta.mode}` : ""}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-text-muted font-mono">
+                            <span>API Client</span>
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Model & Provider */}
+                      <td className="py-3.5 px-4 align-top max-w-[240px]">
+                        <div className="flex flex-col gap-0.5">
+                          <span className="font-mono text-xs font-semibold text-text-main truncate" title={detail.model}>
+                            {detail.model || "—"}
+                          </span>
+                          <span className="font-mono text-[11px] text-text-muted truncate" title={detail.provider}>
+                            {getProviderName(detail.provider, providerNameCache)}
+                            {detail.connectionId && (
+                              <span className="opacity-75"> ({getConnectionName(detail.connectionId, connectionCache)})</span>
+                            )}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* Tokens */}
+                      <td className="py-3.5 px-4 align-top font-mono text-xs whitespace-nowrap">
+                        <div className="flex flex-col gap-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-sky-600 dark:text-sky-400 font-medium">{input.toLocaleString()} in</span>
+                            {cached > 0 && (
+                              <span className="text-[10px] px-1 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-semibold" title={`Cached prompt tokens: ${cached.toLocaleString()}`}>
+                                ↻{cached.toLocaleString()}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-violet-600 dark:text-violet-400 font-medium">{output.toLocaleString()} out</span>
+                        </div>
+                      </td>
+
+                      {/* Latency */}
+                      <td className="py-3.5 px-4 align-top font-mono text-xs whitespace-nowrap">
+                        <div className="flex flex-col gap-0.5">
+                          <span className={cn(
+                            "font-semibold",
+                            (detail.latency?.total || 0) > 5000
+                              ? "text-amber-600 dark:text-amber-400"
+                              : "text-text-main"
+                          )}>
+                            {detail.latency?.total ? `${(detail.latency.total / 1000).toFixed(2)}s` : "—"}
+                          </span>
+                          <span className="text-[10px] text-text-muted">
+                            TTFT: {detail.latency?.ttft ? `${detail.latency.ttft}ms` : "—"}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* Action */}
+                      <td className="py-3.5 px-4 align-top text-center" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleViewDetail(detail)}
+                          className="text-xs h-7 px-2.5"
+                        >
+                          Detail
+                        </Button>
+                      </td>
+                    </tr>
                   );
                 })
               )}
@@ -473,6 +764,7 @@ export default function RequestDetailsTab() {
           </table>
         </div>
       </Card>
+
       <Pagination
         currentPage={pagination.page}
         pageSize={pagination.pageSize}
@@ -480,205 +772,250 @@ export default function RequestDetailsTab() {
         onPageChange={handlePageChange}
         onPageSizeChange={handlePageSizeChange}
       />
+
+      {/* Modern 50% Tabbed Drawer */}
       <Drawer
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
         title="Request Details"
-        width="lg"
+        width="half"
       >
         {selectedDetail && (
-          <div className="space-y-6">
-            <div className="grid min-w-0 grid-cols-1 gap-4 text-sm sm:grid-cols-2">
-              <div>
-                <span className="text-text-muted">ID:</span>{" "}
-                <span className="break-all font-mono text-text-main">{selectedDetail.id}</span>
-              </div>
-              <div>
-                <span className="text-text-muted">Timestamp:</span>{" "}
-                <span className="text-text-main">{formatTimestamp(selectedDetail.timestamp)}</span>
-              </div>
-              <div>
-                 <span className="text-text-muted">Provider:</span>{" "}
-                 <span className="text-text-main font-medium">{getProviderName(selectedDetail.provider, providerNameCache)}</span>
-               </div>
-              <div>
-                <span className="text-text-muted">Account:</span>{" "}
-                <span className="text-text-main font-mono text-xs break-all" title={selectedDetail.connectionId || ""}>{getConnectionName(selectedDetail.connectionId, connectionCache)}</span>
-              </div>
-              <div>
-                <span className="text-text-muted">Model:</span>{" "}
-                <span className="text-text-main font-mono">{selectedDetail.model}</span>
-              </div>
-              <div>
-                <span className="text-text-muted">Cache Key:</span>{" "}
-                <span className="font-mono text-xs break-all text-text-main" title={getCacheKey(selectedDetail) || ""}>{getCacheKey(selectedDetail) ? (getCacheKey(selectedDetail).length > 36 ? `${getCacheKey(selectedDetail).slice(0, 18)}…${getCacheKey(selectedDetail).slice(-8)}` : getCacheKey(selectedDetail)) : "—"}</span>
-                {getRawSessionId(selectedDetail) && getRawSessionId(selectedDetail) !== getCacheKey(selectedDetail) ? <div className="font-mono text-[10px] leading-none text-text-muted/70 break-all mt-1" title={getRawSessionId(selectedDetail)}>{getRawSessionId(selectedDetail)}</div> : null}
-              </div>
-              <div>
-                <span className="text-text-muted">Session ID:</span>{" "}
-                <span className="font-mono text-xs break-all text-text-main" title={getRawSessionId(selectedDetail) || getSessionId(selectedDetail) || ""}>{getRawSessionId(selectedDetail) || getSessionId(selectedDetail) || "—"}</span>
-              </div>
-              {getConversationId(selectedDetail) ? (
-              <div>
-                <span className="text-text-muted">Conversation:</span>{" "}
-                <span className="font-mono text-xs break-all text-text-main" title={getConversationId(selectedDetail) || ""}>{getConversationId(selectedDetail)}</span>
-              </div>
-              ) : null}
-              <div>
-                <span className="text-text-muted">Status:</span>{" "}
-                <span className={cn(
-                  "font-medium",
-                  selectedDetail.status === "success" ? "text-green-600" : "text-red-600"
-                )}>
+          <div className="space-y-5">
+            {/* Drawer Header Badges Bar */}
+            <div className="p-3.5 rounded-xl bg-black/[0.02] dark:bg-white/[0.03] border border-black/5 dark:border-white/5 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant={selectedDetail.status === "success" ? "success" : selectedDetail.status === "streaming" ? "default" : "error"}
+                  size="sm"
+                  dot
+                >
                   {selectedDetail.status}
-                </span>
+                </Badge>
+                <span className="font-mono text-text-muted">{formatTimestamp(selectedDetail.timestamp)}</span>
               </div>
-              {selectedDetail.errorLabel || selectedDetail.error || selectedDetail.response?.error ? (
-                <div className="sm:col-span-2">
-                  <span className="text-text-muted">Error:</span>{" "}
-                  <span className="break-words text-red-600 dark:text-red-400">
-                    {selectedDetail.errorLabel || selectedDetail.error || selectedDetail.response?.error}
-                  </span>
-                </div>
-              ) : null}
-              <div>
-                <span className="text-text-muted">Latency:</span>{" "}
-                <span className="text-text-main font-mono">
-                  TTFT {selectedDetail.latency?.ttft || 0}ms / Total {selectedDetail.latency?.total || 0}ms
-                </span>
+              <div className="flex items-center gap-3 font-mono text-xs">
+                <span>⏱ {(selectedDetail.latency?.total || 0)}ms</span>
+                <span>·</span>
+                <span>Tokens: <strong className="text-sky-600">{getInputTokens(selectedDetail.tokens)} in</strong> / <strong className="text-violet-600">{selectedDetail.tokens?.completion_tokens || 0} out</strong></span>
               </div>
-              <div className="sm:col-span-2">
-                <span className="text-text-muted">Tokens:</span>{" "}
-                {(() => { const input = getInputTokens(selectedDetail.tokens); const cached = getCachedTokens(selectedDetail.tokens); const diff = Math.max(0, input - cached); const out = selectedDetail.tokens?.completion_tokens ?? 0; return (
-                <span className="font-mono">
-                  <span className="text-sky-600 dark:text-sky-400">{input.toLocaleString()}</span>
-                  <span className="text-text-muted"> - </span>
-                  <span className="text-amber-600 dark:text-amber-400">{cached.toLocaleString()}</span>
-                  <span className="text-text-muted"> = </span>
-                  <span className="font-semibold text-text-main">{diff.toLocaleString()}</span>
-                  <span className="text-text-muted"> / </span>
-                  <span className="text-violet-600 dark:text-violet-400">{out.toLocaleString()}</span>
-                </span>
-                ); })()}
-              </div>
-              {getCacheCreationTokens(selectedDetail.tokens) > 0 && (
-                <div>
-                  <span className="text-text-muted">Cache Creation:</span>{" "}
-                  <span className="text-text-main font-mono">
-                    {getCacheCreationTokens(selectedDetail.tokens).toLocaleString()}
-                  </span>
-                </div>
-              )}
             </div>
 
-            {selectedDetail.pxpipe && (
-              <div className="rounded-lg border border-black/5 dark:border-white/5 p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="material-symbols-outlined text-[18px] text-text-muted">image</span>
-                  <span className="font-semibold text-sm text-text-main">PXPIPE</span>
-                  <span className={cn(
-                    "text-xs px-2 py-0.5 rounded",
-                    selectedDetail.pxpipe.applied
-                      ? "bg-green-500/15 text-green-600"
-                      : "bg-amber-500/15 text-amber-600"
-                  )}>
-                    {selectedDetail.pxpipe.applied ? "Activated" : "Skipped"}
-                  </span>
-                </div>
-                {selectedDetail.pxpipe.applied ? (
-                  <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-                    <div>
-                      <span className="text-text-muted block text-xs">Original (est.)</span>
-                      <span className="font-mono">{(selectedDetail.pxpipe.tokensBeforeEst || 0).toLocaleString()} tokens</span>
-                    </div>
-                    <div>
-                      <span className="text-text-muted block text-xs">Compressed (est.)</span>
-                      <span className="font-mono">{(selectedDetail.pxpipe.tokensAfterEst || 0).toLocaleString()} tokens</span>
-                    </div>
-                    <div>
-                      <span className="text-text-muted block text-xs">Saved</span>
-                      <span className="font-mono text-green-600">{selectedDetail.pxpipe.savedPct || 0}%</span>
-                    </div>
-                    <div>
-                      <span className="text-text-muted block text-xs">Images</span>
-                      <span className="font-mono">{selectedDetail.pxpipe.imageCount || 0} ({selectedDetail.pxpipe.durationMs || 0}ms)</span>
-                    </div>
+            {/* Drawer Sub-Tabs */}
+            <div className="flex border-b border-black/10 dark:border-white/10 gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveDrawerTab("preview")}
+                className={cn(
+                  "py-2 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5",
+                  activeDrawerTab === "preview"
+                    ? "border-primary text-primary"
+                    : "border-transparent text-text-muted hover:text-text-main"
+                )}
+              >
+                <span className="material-symbols-outlined text-[16px]">forum</span>
+                Conversation Preview
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveDrawerTab("metadata")}
+                className={cn(
+                  "py-2 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5",
+                  activeDrawerTab === "metadata"
+                    ? "border-primary text-primary"
+                    : "border-transparent text-text-muted hover:text-text-main"
+                )}
+              >
+                <span className="material-symbols-outlined text-[16px]">tune</span>
+                Agent & Routing
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveDrawerTab("raw")}
+                className={cn(
+                  "py-2 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5",
+                  activeDrawerTab === "raw"
+                    ? "border-primary text-primary"
+                    : "border-transparent text-text-muted hover:text-text-main"
+                )}
+              >
+                <span className="material-symbols-outlined text-[16px]">data_object</span>
+                Raw Payloads
+              </button>
+            </div>
+
+            {/* Tab 1: Conversation Preview */}
+            {activeDrawerTab === "preview" && (
+              <div className="space-y-4 animate-in fade-in duration-150">
+                {extractMessages(selectedDetail).length === 0 ? (
+                  <div className="p-8 text-center text-text-muted text-xs font-medium">
+                    No conversation messages found in payload.
                   </div>
                 ) : (
-                  <p className="text-sm text-text-muted">
-                    Reason: <span className="font-mono">{selectedDetail.pxpipe.reason}</span>
-                    {selectedDetail.pxpipe.detail ? ` — ${selectedDetail.pxpipe.detail}` : ""}
-                  </p>
+                  extractMessages(selectedDetail).map((msg, mIdx) => {
+                    const isUser = msg.role === "user";
+                    const isAssistant = msg.role === "assistant";
+                    const isSystem = msg.role === "system" || msg.role === "developer";
+
+                    return (
+                      <div key={mIdx} className="flex flex-col gap-1.5">
+                        <div className="flex items-center gap-2 text-xs font-semibold text-text-muted uppercase tracking-wider">
+                          <span className="material-symbols-outlined text-[16px]">
+                            {isUser ? "person" : isAssistant ? "smart_toy" : "settings"}
+                          </span>
+                          <span>{msg.role}</span>
+                        </div>
+                        {msg.thinking && (
+                          <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs font-mono text-amber-900 dark:text-amber-200">
+                            <span className="font-semibold block mb-1 uppercase text-[10px] tracking-wider text-amber-600">Thinking Process:</span>
+                            <pre className="whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">{msg.thinking}</pre>
+                          </div>
+                        )}
+                        <div className={cn(
+                          "p-4 rounded-xl text-xs sm:text-sm leading-relaxed whitespace-pre-wrap font-sans border",
+                          isUser
+                            ? "bg-primary/5 border-primary/15 text-text-main"
+                            : isAssistant
+                            ? msg.isError
+                              ? "bg-red-500/10 border-red-500/20 text-red-600"
+                              : "bg-surface border-border text-text-main"
+                            : "bg-black/[0.02] dark:bg-white/[0.02] border-border/50 text-text-muted font-mono text-xs"
+                        )}>
+                          {msg.text}
+                        </div>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             )}
 
-            <div className="space-y-4">
-              <CollapsibleSection
-                title="1. Client Request (Input)"
-                defaultOpen={true}
-                icon="input"
-                copyValue={formatJsonPayload(selectedDetail.request)}
-                copyId="client-request"
-                copied={copied}
-                onCopy={copy}
-              >
-                <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                  {formatJsonPayload(selectedDetail.request)}
-                </pre>
-              </CollapsibleSection>
+            {/* Tab 2: Agent Metadata & Routing Info */}
+            {activeDrawerTab === "metadata" && (
+              <div className="space-y-5 animate-in fade-in duration-150 text-xs">
+                {/* Routing Box */}
+                <div className="p-4 rounded-xl bg-surface border border-border space-y-3">
+                  <h4 className="font-semibold text-text-main uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-primary">route</span>
+                    Routing Details
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Request ID</span>
+                      <span className="font-mono text-text-main font-semibold break-all">{selectedDetail.id}</span>
+                    </div>
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Provider / Model</span>
+                      <span className="font-mono text-text-main font-semibold">{getProviderName(selectedDetail.provider, providerNameCache)} / {selectedDetail.model}</span>
+                    </div>
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Account</span>
+                      <span className="font-mono text-text-main break-all">{getConnectionName(selectedDetail.connectionId, connectionCache)}</span>
+                    </div>
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Session ID</span>
+                      <span className="font-mono text-text-main break-all">{getRawSessionId(selectedDetail) || getSessionId(selectedDetail) || "—"}</span>
+                    </div>
+                  </div>
+                </div>
 
-              {selectedDetail.providerRequest && (
-                <CollapsibleSection
-                  title="2. Provider Request (Translated)"
-                  icon="translate"
-                  copyValue={formatJsonPayload(selectedDetail.providerRequest)}
-                  copyId="provider-request"
-                  copied={copied}
-                  onCopy={copy}
-                >
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {formatJsonPayload(selectedDetail.providerRequest)}
-                  </pre>
-                </CollapsibleSection>
-              )}
-
-              {selectedDetail.providerResponse && (
-                <CollapsibleSection
-                  title="3. Provider Response (Raw)"
-                  icon="data_object"
-                  copyValue={formatJsonPayload(selectedDetail.providerResponse)}
-                  copyId="provider-response"
-                  copied={copied}
-                  onCopy={copy}
-                >
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {formatJsonPayload(selectedDetail.providerResponse)}
-                  </pre>
-                </CollapsibleSection>
-              )}
-              
-              <CollapsibleSection title="4. Client Response (Final)" defaultOpen={true} icon="output">
-                {selectedDetail.response?.thinking && (
-                  <div className="mb-4">
-                    <h4 className="font-semibold text-text-main mb-2 flex items-center gap-2 text-xs uppercase tracking-wide opacity-70">
-                      <span className="material-symbols-outlined text-[16px]">psychology</span>
-                      Thinking Process
-                    </h4>
-                    <pre className="max-h-[200px] max-w-full overflow-auto rounded-lg border border-amber-200 bg-amber-50 p-3 font-mono text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100 sm:p-4">
-                      {selectedDetail.response.thinking}
-                    </pre>
+                {/* Agent Metadata Box */}
+                {selectedDetail.agentMetadata && Object.keys(selectedDetail.agentMetadata).length > 0 ? (
+                  <div className="p-4 rounded-xl bg-surface border border-border space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-semibold text-text-main uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-[16px] text-purple-500">smart_toy</span>
+                        Agent Metadata
+                      </h4>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={copied === "drawer-meta" ? "check" : "content_copy"}
+                        onClick={() => copy("drawer-meta", JSON.stringify(selectedDetail.agentMetadata, null, 2))}
+                        className="text-xs h-7"
+                      >
+                        {copied === "drawer-meta" ? "Copied!" : "Copy JSON"}
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 font-mono text-xs">
+                      {Object.entries(selectedDetail.agentMetadata).map(([k, v]) => (
+                        <div key={k} className="p-2.5 rounded-lg bg-black/[0.02] dark:bg-white/[0.03] border border-border/60">
+                          <span className="text-text-muted block text-[10px] font-sans font-medium uppercase tracking-wider">{k}</span>
+                          <span className="text-text-main font-semibold break-all">{String(v)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-6 rounded-xl border border-dashed border-border text-center text-text-muted">
+                    No agent metadata attached to this request.
                   </div>
                 )}
-                
-                <h4 className="font-semibold text-text-main mb-2 text-xs uppercase tracking-wide opacity-70">
-                  Content
-                </h4>
-                <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                  {selectedDetail.response?.content || "[No content]"}
-                </pre>
-              </CollapsibleSection>
-            </div>
+              </div>
+            )}
+
+            {/* Tab 3: Raw Payloads */}
+            {activeDrawerTab === "raw" && (
+              <div className="space-y-4 animate-in fade-in duration-150">
+                <CollapsibleSection
+                  title="1. Client Request (Input)"
+                  defaultOpen={true}
+                  icon="input"
+                  copyValue={formatJsonPayload(selectedDetail.request)}
+                  copyId="client-request"
+                  copied={copied}
+                  onCopy={copy}
+                >
+                  <pre className="max-h-[320px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
+                    {formatJsonPayload(selectedDetail.request)}
+                  </pre>
+                </CollapsibleSection>
+
+                {selectedDetail.providerRequest && (
+                  <CollapsibleSection
+                    title="2. Provider Request (Translated)"
+                    icon="translate"
+                    copyValue={formatJsonPayload(selectedDetail.providerRequest)}
+                    copyId="provider-request"
+                    copied={copied}
+                    onCopy={copy}
+                  >
+                    <pre className="max-h-[320px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
+                      {formatJsonPayload(selectedDetail.providerRequest)}
+                    </pre>
+                  </CollapsibleSection>
+                )}
+
+                {selectedDetail.providerResponse && (
+                  <CollapsibleSection
+                    title="3. Provider Response (Raw)"
+                    icon="data_object"
+                    copyValue={formatJsonPayload(selectedDetail.providerResponse)}
+                    copyId="provider-response"
+                    copied={copied}
+                    onCopy={copy}
+                  >
+                    <pre className="max-h-[320px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
+                      {formatJsonPayload(selectedDetail.providerResponse)}
+                    </pre>
+                  </CollapsibleSection>
+                )}
+
+                <CollapsibleSection
+                  title="4. Client Response (Final)"
+                  defaultOpen={true}
+                  icon="output"
+                  copyValue={formatJsonPayload(selectedDetail.response)}
+                  copyId="client-response"
+                  copied={copied}
+                  onCopy={copy}
+                >
+                  <pre className="max-h-[320px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
+                    {formatJsonPayload(selectedDetail.response)}
+                  </pre>
+                </CollapsibleSection>
+              </div>
+            )}
           </div>
         )}
       </Drawer>

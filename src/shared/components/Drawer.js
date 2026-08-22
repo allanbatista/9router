@@ -16,6 +16,8 @@ export default function Drawer({
     md: "w-[500px]",
     lg: "w-[600px]",
     xl: "w-[800px]",
+    half: "w-full md:w-1/2",
+    "1/2": "w-full md:w-1/2",
     full: "w-full",
   };
 

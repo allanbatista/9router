@@ -1,3 +1,4 @@
+import { normalizeAgentMetadata } from "../../utils/agentMetadata.js";
 import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { COLORS } from "../../utils/stream.js";
 import { canonicalizeUsage } from "../../utils/usageTracking.js";
@@ -61,6 +62,9 @@ export function extractUsageFromResponse(responseBody) {
 }
 
 export function buildRequestDetail(base, overrides = {}) {
+  const rawMetadata = base.agentMetadata || base.request?._agent_metadata || overrides.agentMetadata || overrides.request?._agent_metadata;
+  const normalizedMetadata = normalizeAgentMetadata(rawMetadata);
+
   return {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
@@ -68,6 +72,7 @@ export function buildRequestDetail(base, overrides = {}) {
     timestamp: new Date().toISOString(),
     latency: base.latency || { ttft: 0, total: 0 },
     tokens: base.tokens || { prompt_tokens: 0, completion_tokens: 0 },
+    agentMetadata: Object.keys(normalizedMetadata).length > 0 ? normalizedMetadata : (base.agentMetadata || {}),
     request: base.request,
     providerRequest: base.providerRequest || null,
     providerResponse: base.providerResponse || null,

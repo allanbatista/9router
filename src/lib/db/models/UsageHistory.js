@@ -15,6 +15,7 @@ export const UsageHistorySchema = new Schema(
     cost: { type: Number, default: 0 },
     status: { type: String, default: null },
     tokens: { type: Schema.Types.Mixed, default: null },
+    agentMetadata: { type: Schema.Types.Mixed, default: () => ({}) },
     meta: { type: Schema.Types.Mixed, default: null },
   },
   {

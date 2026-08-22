@@ -119,6 +119,9 @@ function docToDetail(doc) {
     model: doc.model ?? data.model ?? null,
     connectionId: doc.connectionId ?? data.connectionId ?? null,
     status: doc.status ?? data.status ?? null,
+    agentMetadata: (doc.agentMetadata && typeof doc.agentMetadata === "object" && Object.keys(doc.agentMetadata).length > 0)
+      ? doc.agentMetadata
+      : (data.agentMetadata && typeof data.agentMetadata === "object" ? data.agentMetadata : {}),
     latency: data.latency || {},
     tokens: data.tokens || {},
     request: data.request || {},
@@ -146,6 +149,18 @@ export async function flushToDatabase() {
         const timestamp = item.timestamp ? new Date(item.timestamp) : new Date();
         if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
 
+        const rawAgentMetadata = item.agentMetadata || item.request?._agent_metadata || {};
+        let agentMetadata = {};
+        if (Array.isArray(rawAgentMetadata)) {
+          for (const entry of rawAgentMetadata) {
+            if (entry?.key != null && entry?.value != null) {
+              agentMetadata[String(entry.key)] = entry.value;
+            }
+          }
+        } else if (rawAgentMetadata && typeof rawAgentMetadata === "object") {
+          agentMetadata = { ...rawAgentMetadata };
+        }
+
         const is4xx = is4xxStatus(item.status) || is4xxStatus(item.response?.status);
         const record = {
           id,
@@ -154,6 +169,7 @@ export async function flushToDatabase() {
           connectionId: item.connectionId || null,
           timestamp: timestamp.toISOString(),
           status: item.status || null,
+          agentMetadata,
           latency: item.latency || {},
           tokens: item.tokens || {},
           request: is4xx ? (item.request || {}) : truncateField(item.request, config.maxJsonSize),
@@ -171,6 +187,7 @@ export async function flushToDatabase() {
           model: record.model,
           connectionId: record.connectionId,
           status: record.status,
+          agentMetadata,
           data: record,
         };
       });
@@ -242,6 +259,25 @@ export async function getRequestDetails(filter = {}) {
     if (filter.endDate) query.timestamp.$lte = new Date(filter.endDate);
   }
 
+  // Dynamic agent metadata filters
+  if (filter.agentMetadata && typeof filter.agentMetadata === "object") {
+    for (const [key, value] of Object.entries(filter.agentMetadata)) {
+      if (value !== undefined && value !== null && String(value).trim() !== "") {
+        query[`agentMetadata.${key}`] = String(value).trim();
+      }
+    }
+  }
+
+  // Also support flat keys like `agentMetadata.os` or `metadata_os` passed in filter
+  for (const [k, v] of Object.entries(filter)) {
+    if (k.startsWith("agentMetadata.") && v !== undefined && v !== null && String(v).trim() !== "") {
+      query[k] = String(v).trim();
+    } else if (k.startsWith("metadata_") && v !== undefined && v !== null && String(v).trim() !== "") {
+      const metaKey = k.slice("metadata_".length);
+      query[`agentMetadata.${metaKey}`] = String(v).trim();
+    }
+  }
+
   const totalItems = await RequestDetail.countDocuments(query);
   const page = filter.page || 1;
   const pageSize = filter.pageSize || 50;
@@ -267,6 +303,16 @@ export async function getRequestDetails(filter = {}) {
       hasPrev: page > 1,
     },
   };
+}
+
+export async function getDistinctMetadataValues(key) {
+  if (!key || typeof key !== "string") return [];
+  await getConnection();
+  const safeKey = key.replace(/^\$+/, "").replace(/\./g, "_");
+  const values = await RequestDetail.distinct(`agentMetadata.${safeKey}`, {
+    [`agentMetadata.${safeKey}`]: { $ne: null }
+  });
+  return (values || []).filter((v) => v !== null && v !== undefined && String(v).trim() !== "").map(String).sort();
 }
 
 export async function getDistinctProviders() {

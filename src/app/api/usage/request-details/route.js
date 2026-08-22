@@ -19,7 +19,7 @@ function getErrorLabel(detail) {
 
 /**
  * GET /api/usage/request-details
- * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate
+ * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate, agentMetadata.<key>, agentMetadata[<key>]
  */
 export async function GET(request) {
   try {
@@ -38,7 +38,7 @@ export async function GET(request) {
     
     if (page < 1) {
       return NextResponse.json(
-        { error: "Page must be >= 1" },
+        { error: "Page must be greater than or equal to 1" },
         { status: 400 }
       );
     }
@@ -61,6 +61,25 @@ export async function GET(request) {
     if (status) filter.status = status;
     if (startDate) filter.startDate = startDate;
     if (endDate) filter.endDate = endDate;
+
+    // Extract metadata filters from query params
+    const agentMetadata = {};
+    for (const [k, v] of searchParams.entries()) {
+      if (k.startsWith("agentMetadata.") && v) {
+        const subKey = k.slice("agentMetadata.".length);
+        agentMetadata[subKey] = v;
+      } else if (k.startsWith("agentMetadata[") && k.endsWith("]") && v) {
+        const subKey = k.slice("agentMetadata[".length, -1);
+        agentMetadata[subKey] = v;
+      } else if (k.startsWith("metadata_") && v) {
+        const subKey = k.slice("metadata_".length);
+        agentMetadata[subKey] = v;
+      }
+    }
+    if (Object.keys(agentMetadata).length > 0) {
+      filter.agentMetadata = agentMetadata;
+    }
+
     const result = await getRequestDetails(filter);
 
     function extractIds(d) {

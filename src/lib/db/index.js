@@ -70,7 +70,7 @@ export {
 
 // Request details
 export {
-  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders, getDistinctMetadataValues,
 } from "./repos/requestDetailsRepo.js";
 
 // Session affinity (round-robin-affinity) + combo affinity
