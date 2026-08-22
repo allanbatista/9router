@@ -75,6 +75,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
 
       if (error.name === "AbortError") {
         logStream("⚡", "ABORTED");
+        onError?.(error);
         return;
       }
 
@@ -188,7 +189,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
+export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, streamMetrics = null) {
   let stallTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
@@ -229,6 +230,10 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       chunkCount++;
       const sz = chunk?.byteLength || chunk?.length || 0;
       totalBytes += sz;
+      if (streamMetrics) {
+        streamMetrics.providerChunks++;
+        streamMetrics.providerBytes += sz;
+      }
       const now = Date.now();
       const gap = now - lastChunkAt;
       lastChunkAt = now;
@@ -238,7 +243,11 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       armStall();
       controller.enqueue(chunk);
     },
-    flush() { dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); }
+    flush() {
+      dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`);
+      if (streamMetrics) streamMetrics.upstreamEnded = true;
+      clearStall();
+    }
   });
 
   const transformedBody = providerResponse.body
@@ -251,4 +260,3 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     onAbortTerminal
   );
 }
-

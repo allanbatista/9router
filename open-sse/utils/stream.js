@@ -22,6 +22,81 @@ const STREAM_MODE = {
   PASSTHROUGH: "passthrough" // No translation, normalize output, extract usage
 };
 
+export function createStreamMetrics() {
+  return {
+    providerChunks: 0,
+    providerBytes: 0,
+    clientChunks: 0,
+    clientBytes: 0,
+    ttftAt: null,
+    upstreamEnded: false,
+    usage: null,
+    toolCalls: [],
+  };
+}
+
+export function snapshotStreamMetrics(metrics) {
+  if (!metrics) return null;
+  return {
+    providerChunks: metrics.providerChunks || 0,
+    providerBytes: metrics.providerBytes || 0,
+    clientChunks: metrics.clientChunks || 0,
+    clientBytes: metrics.clientBytes || 0,
+    upstreamEnded: metrics.upstreamEnded === true,
+    toolCalls: Array.isArray(metrics.toolCalls)
+      ? metrics.toolCalls.map(({ id, name, index }) => ({ id, name, index }))
+      : [],
+  };
+}
+
+function recordToolCall(metrics, call) {
+  if (!metrics || !call) return;
+  const id = call.id || call.call_id || call.toolCallId || null;
+  const name = call.function?.name || call.name || call.item?.name || null;
+  const index = Number.isInteger(call.index) ? call.index : null;
+  if (!id && !name && index === null) return;
+
+  const existing = metrics.toolCalls.find((item) => (
+    (id && item.id === id) || (!id && item.name === name && item.index === index)
+  ));
+  if (existing) {
+    if (!existing.name && name) existing.name = name;
+    if (existing.index === null && index !== null) existing.index = index;
+    return;
+  }
+  metrics.toolCalls.push({ id, name, index });
+}
+
+function recordToolCalls(item, metrics) {
+  if (!item || !metrics) return;
+
+  for (const choice of item.choices || []) {
+    for (const call of choice.delta?.tool_calls || []) recordToolCall(metrics, call);
+  }
+
+  if (item.type === "content_block_start" && item.content_block?.type === "tool_use") {
+    recordToolCall(metrics, item.content_block);
+  }
+
+  if (item.type === "response.output_item.added" && item.item?.type === "function_call") {
+    recordToolCall(metrics, item.item);
+  }
+
+  for (const part of item.candidates?.[0]?.content?.parts || []) {
+    if (part.functionCall) recordToolCall(metrics, part.functionCall);
+  }
+}
+
+function enqueueOutput(controller, output, metrics, item = null) {
+  const bytes = sharedEncoder.encode(output);
+  if (metrics) {
+    metrics.clientChunks++;
+    metrics.clientBytes += bytes.byteLength;
+    recordToolCalls(item, metrics);
+  }
+  controller.enqueue(bytes);
+}
+
 /**
  * Create unified SSE transform stream
  * @param {object} options
@@ -49,7 +124,9 @@ export function createSSEStream(options = {}) {
     connectionId = null,
     body = null,
     onStreamComplete = null,
-    apiKey = null
+    apiKey = null,
+    streamMetrics = null,
+    onStreamError = null
   } = options;
 
   let buffer = "";
@@ -78,7 +155,10 @@ export function createSSEStream(options = {}) {
 
   return new TransformStream({
     transform(chunk, controller) {
-      if (!ttftAt) ttftAt = Date.now();
+      if (!ttftAt) {
+        ttftAt = Date.now();
+        if (streamMetrics) streamMetrics.ttftAt = ttftAt;
+      }
       const text = decoder.decode(chunk, { stream: true });
       buffer += text;
       reqLogger?.appendProviderChunk?.(text);
@@ -105,10 +185,12 @@ export function createSSEStream(options = {}) {
         if (mode === STREAM_MODE.PASSTHROUGH) {
           let output;
           let injectedUsage = false;
+          let parsedForMetrics = null;
 
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
               const parsed = JSON.parse(trimmed.slice(5).trim());
+              parsedForMetrics = parsed;
 
               const idFixed = fixInvalidId(parsed);
 
@@ -166,6 +248,7 @@ export function createSSEStream(options = {}) {
               const extracted = extractUsage(parsed);
               if (extracted) {
                 usage = mergeUsage(usage, extracted);
+                if (streamMetrics) streamMetrics.usage = usage;
               }
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
@@ -201,7 +284,7 @@ export function createSSEStream(options = {}) {
           }
 
           reqLogger?.appendConvertedChunk?.(output);
-          controller.enqueue(sharedEncoder.encode(output));
+          enqueueOutput(controller, output, streamMetrics, parsedForMetrics);
           continue;
         }
 
@@ -229,7 +312,7 @@ export function createSSEStream(options = {}) {
           if (keepsOpenAIResponsesFormat && !openAIResponsesTerminalSeen) {
             const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
             reqLogger?.appendConvertedChunk?.(failedOutput);
-            controller.enqueue(sharedEncoder.encode(failedOutput));
+            enqueueOutput(controller, failedOutput, streamMetrics);
             openAIResponsesTerminalSeen = true;
             sseEmittedCount++;
           }
@@ -237,7 +320,7 @@ export function createSSEStream(options = {}) {
           if (keepsOpenAIResponsesFormat && !streamDoneSent) {
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
-            controller.enqueue(sharedEncoder.encode(doneOutput));
+            enqueueOutput(controller, doneOutput, streamMetrics);
           }
           streamDoneSent = true;
           if (keepsOpenAIResponsesFormat) openAIResponsesDoneSent = true;
@@ -284,12 +367,13 @@ export function createSSEStream(options = {}) {
         // Extract usage
         const extracted = extractUsage(parsed);
         if (extracted) state.usage = mergeUsage(state.usage, extracted); // Keep original usage for logging
+        if (streamMetrics) streamMetrics.usage = state?.usage || usage;
 
         // Responses same-format passthrough: re-emit with original event framing
         if (keepsOpenAIResponsesFormat && openAIResponsesEventName) {
           const output = formatSSE({ event: openAIResponsesEventName, data: parsed }, sourceFormat);
           reqLogger?.appendConvertedChunk?.(output);
-          controller.enqueue(sharedEncoder.encode(output));
+          enqueueOutput(controller, output, streamMetrics, parsed);
           currentOpenAIResponsesEvent = null;
           sseEmittedCount++;
           continue;
@@ -330,7 +414,7 @@ export function createSSEStream(options = {}) {
 
             const output = formatSSE(item, sourceFormat);
             reqLogger?.appendConvertedChunk?.(output);
-            controller.enqueue(sharedEncoder.encode(output));
+            enqueueOutput(controller, output, streamMetrics, item);
             sseEmittedCount++;
           }
         }
@@ -341,6 +425,10 @@ export function createSSEStream(options = {}) {
       const evtSummary = Object.entries(eventTypeCounts).map(([k, v]) => `${k}=${v}`).join(",") || "none";
       dbg("SSE", `flush | provider=${provider} | model=${model} | recvLines=${sseLineCount} | emitted=${sseEmittedCount} | events=[${evtSummary}]`);
       trackPendingRequest(model, provider, connectionId, false);
+      if (streamMetrics) {
+        streamMetrics.upstreamEnded = true;
+        streamMetrics.usage = state?.usage || usage;
+      }
       try {
         const remaining = decoder.decode();
         if (remaining) buffer += remaining;
@@ -352,7 +440,7 @@ export function createSSEStream(options = {}) {
               output = "data: " + buffer.slice(5);
             }
             reqLogger?.appendConvertedChunk?.(output);
-            controller.enqueue(sharedEncoder.encode(output));
+            enqueueOutput(controller, output, streamMetrics);
           }
 
           if (!hasValidUsage(usage) && totalContentLength > 0) {
@@ -374,7 +462,7 @@ export function createSSEStream(options = {}) {
           if (!streamDoneSent && !isGeminiFamily) {
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
-            controller.enqueue(sharedEncoder.encode(doneOutput));
+            enqueueOutput(controller, doneOutput, streamMetrics);
           }
 
           if (onStreamComplete) {
@@ -403,7 +491,7 @@ export function createSSEStream(options = {}) {
                 if (item === null || item === undefined) continue;
                 const output = formatSSE(item, sourceFormat);
                 reqLogger?.appendConvertedChunk?.(output);
-                controller.enqueue(sharedEncoder.encode(output));
+                enqueueOutput(controller, output, streamMetrics, item);
               }
             }
           }
@@ -423,7 +511,7 @@ export function createSSEStream(options = {}) {
             if (item === null || item === undefined) continue;
             const output = formatSSE(item, sourceFormat);
             reqLogger?.appendConvertedChunk?.(output);
-            controller.enqueue(sharedEncoder.encode(output));
+            enqueueOutput(controller, output, streamMetrics, item);
           }
         }
 
@@ -432,14 +520,14 @@ export function createSSEStream(options = {}) {
         if (keepsOpenAIResponsesFormat && !openAIResponsesTerminalSeen) {
           const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
           reqLogger?.appendConvertedChunk?.(failedOutput);
-          controller.enqueue(sharedEncoder.encode(failedOutput));
+          enqueueOutput(controller, failedOutput, streamMetrics);
           openAIResponsesTerminalSeen = true;
         }
 
         if (keepsOpenAIResponsesFormat && !openAIResponsesDoneSent && !streamDoneSent) {
           const doneOutput = "data: [DONE]\n\n";
           reqLogger?.appendConvertedChunk?.(doneOutput);
-          controller.enqueue(sharedEncoder.encode(doneOutput));
+          enqueueOutput(controller, doneOutput, streamMetrics);
           openAIResponsesDoneSent = true;
           streamDoneSent = true;
         }
@@ -447,6 +535,7 @@ export function createSSEStream(options = {}) {
         if (!hasValidUsage(state?.usage) && totalContentLength > 0) {
           state.usage = estimateUsage(body, totalContentLength, sourceFormat);
         }
+        if (streamMetrics) streamMetrics.usage = state?.usage || usage;
 
         if (hasValidUsage(state?.usage)) {
           logUsage(state.provider || targetFormat, state.usage, model, connectionId, apiKey);
@@ -462,12 +551,13 @@ export function createSSEStream(options = {}) {
         }
       } catch (error) {
         console.log("Error in flush:", error);
+        onStreamError?.(error);
       }
     }
   });
 }
 
-export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null) {
+export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, streamMetrics = null, onStreamError = null) {
   return createSSEStream({
     mode: STREAM_MODE.TRANSLATE,
     targetFormat,
@@ -480,11 +570,13 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
     connectionId,
     body,
     onStreamComplete,
-    apiKey
+    apiKey,
+    streamMetrics,
+    onStreamError
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, streamMetrics = null, onStreamError = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
@@ -493,6 +585,8 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     connectionId,
     body,
     onStreamComplete,
-    apiKey
+    apiKey,
+    streamMetrics,
+    onStreamError
   });
 }
