@@ -57,6 +57,34 @@ describe("resolveSessionId", () => {
     expect(got).toBe("client-sess-123");
   });
 
+  it("uses _agent_metadata session-id when prompt_cache_key is absent", () => {
+    const got = resolveSessionId({
+      body: {
+        _agent_metadata: [
+          { key: "session-id", value: "agent-session-123" },
+          { key: "agent-name", value: "pi" },
+        ],
+      },
+      connectionId: "conn1",
+      scope: "antigravity",
+    });
+
+    expect(got).toBe("agent-session-123");
+  });
+
+  it("keeps prompt_cache_key ahead of _agent_metadata session-id", () => {
+    const got = resolveSessionId({
+      body: {
+        prompt_cache_key: "prompt-cache-123",
+        _agent_metadata: [{ key: "session-id", value: "agent-session-123" }],
+      },
+      connectionId: "conn1",
+      scope: "antigravity",
+    });
+
+    expect(got).toBe("prompt-cache-123");
+  });
+
   it("does not treat request-scoped x-client-request-id as a session override", () => {
     const first = resolveSessionId({
       headers: { "x-client-request-id": "req-1" },

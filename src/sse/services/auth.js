@@ -284,13 +284,18 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
-  const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
+  const rawReason = typeof errorText === "string" ? errorText : "Provider error";
+  const reason = rawReason.replace(/\s+/g, " ").slice(0, 100);
+  const lastErrorRaw = rawReason.length > 64 * 1024
+    ? `${rawReason.slice(0, 64 * 1024)}\n...[truncated]`
+    : rawReason;
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
     testStatus: "unavailable",
     lastError: reason,
+    lastErrorRaw,
     errorCode: status,
     lastErrorAt: new Date().toISOString(),
     backoffLevel: newBackoffLevel ?? backoffLevel
@@ -348,6 +353,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
     Object.assign(clearObj, {
       testStatus: "active",
       lastError: null,
+      lastErrorRaw: null,
       errorCode: null,
       lastErrorAt: null,
       backoffLevel: 0

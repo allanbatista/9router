@@ -83,9 +83,14 @@ export async function GET(request) {
       let rawSessionId = null;
       if (rq && typeof rq === "object" && !rq.redacted) {
         if (rq.prompt_cache_key) rawSessionId = String(rq.prompt_cache_key);
+        else if (Array.isArray(rq._agent_metadata)) {
+          const session = rq._agent_metadata.find((item) => item?.key === "session-id")?.value;
+          if (session != null && String(session).trim() !== "") rawSessionId = String(session);
+        }
         else if (rq.session_id) rawSessionId = String(rq.session_id);
         else if (rq.conversation_id) rawSessionId = String(rq.conversation_id);
         if (!cacheKey && rawSessionId) cacheKey = rawSessionId;
+        if (!sessionId && rawSessionId) sessionId = rawSessionId;
         if (!sessionId && rq.session_id) sessionId = String(rq.session_id);
         if (!conversationId && rq.conversation_id) conversationId = String(rq.conversation_id);
       }

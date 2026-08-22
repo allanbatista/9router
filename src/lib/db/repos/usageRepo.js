@@ -673,10 +673,10 @@ export async function getChartData(period = "7d") {
     const startTime = startOfDay.getTime();
     const endTime = startTime + bucketCount * bucketMs;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, inputTokens: 0, cachedTokens: 0, uncachedInputTokens: 0, cost: 0 }));
 
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
+      `SELECT timestamp, promptTokens, completionTokens, tokens, cost FROM usageHistory WHERE timestamp >= ?`,
       [new Date(startTime).toISOString()]
     );
     for (const r of rows) {
@@ -685,6 +685,9 @@ export async function getChartData(period = "7d") {
       const idx = Math.floor((t - startTime) / bucketMs);
       if (idx >= 0 && idx < bucketCount) {
         buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
+        buckets[idx].inputTokens += r.promptTokens || 0;
+        buckets[idx].cachedTokens += Math.min(r.promptTokens || 0, getCachedTokens(parseJson(r.tokens, {})));
+        buckets[idx].uncachedInputTokens = buckets[idx].inputTokens - buckets[idx].cachedTokens;
         buckets[idx].cost += r.cost || 0;
       }
     }
@@ -696,10 +699,10 @@ export async function getChartData(period = "7d") {
     const bucketMs = 3600000;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const startTime = now - bucketCount * bucketMs;
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, inputTokens: 0, cachedTokens: 0, uncachedInputTokens: 0, cost: 0 }));
 
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
+      `SELECT timestamp, promptTokens, completionTokens, tokens, cost FROM usageHistory WHERE timestamp >= ?`,
       [new Date(startTime).toISOString()]
     );
     for (const r of rows) {
@@ -707,6 +710,9 @@ export async function getChartData(period = "7d") {
       if (t < startTime || t > now) continue;
       const idx = Math.min(Math.floor((t - startTime) / bucketMs), bucketCount - 1);
       buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
+      buckets[idx].inputTokens += r.promptTokens || 0;
+      buckets[idx].cachedTokens += Math.min(r.promptTokens || 0, getCachedTokens(parseJson(r.tokens, {})));
+      buckets[idx].uncachedInputTokens = buckets[idx].inputTokens - buckets[idx].cachedTokens;
       buckets[idx].cost += r.cost || 0;
     }
     return buckets;
@@ -729,6 +735,9 @@ export async function getChartData(period = "7d") {
     return {
       label: labelFn(d),
       tokens: dayData ? (dayData.promptTokens || 0) + (dayData.completionTokens || 0) : 0,
+      inputTokens: dayData?.promptTokens || 0,
+      cachedTokens: Math.min(dayData?.promptTokens || 0, dayData?.cachedTokens || 0),
+      uncachedInputTokens: Math.max(0, (dayData?.promptTokens || 0) - Math.min(dayData?.promptTokens || 0, dayData?.cachedTokens || 0)),
       cost: dayData ? (dayData.cost || 0) : 0,
     };
   });

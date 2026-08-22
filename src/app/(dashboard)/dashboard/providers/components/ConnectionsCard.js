@@ -88,6 +88,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   const effectiveStatus = connection.testStatus === "unavailable" && !isCooldown ? "active" : connection.testStatus;
 
   const getStatusVariant = () => getConnectionStatusVariant(connection.isActive, effectiveStatus);
+  const errorDetails = connection.lastErrorRaw || connection.lastError;
 
   const displayName = isOAuth
     ? connection.name || connection.email || connection.displayName || "OAuth Account"
@@ -120,7 +121,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
             {hasAnyProxy && <Badge variant={proxyBadgeVariant} size="sm">Proxy</Badge>}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {connection.lastError && connection.isActive !== false && (
-              <span className="text-xs text-red-500 truncate max-w-[300px]" title={connection.lastError}>{connection.lastError}</span>
+              <span className="text-xs text-red-500 truncate max-w-[300px]" title={errorDetails}>{connection.lastError}</span>
             )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>
           </div>

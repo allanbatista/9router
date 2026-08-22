@@ -18,6 +18,7 @@ import dynamic from "next/dynamic";
 // Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders
 const ProviderTopology = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/ProviderTopology"), { ssr: false });
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
+import InputTokensChart from "@/app/(dashboard)/dashboard/usage/components/InputTokensChart";
 
 function timeAgo(timestamp) {
   const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
@@ -518,20 +519,25 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           </div>
         </div>
         {loading ? spinner : activeTableConfig && (
-          <UsageTable
-            title=""
-            columns={activeTableConfig.columns}
-            groupedData={activeTableConfig.groupedData}
-            tableType={tableView}
-            sortBy={sortBy}
-            sortOrder={sortOrder}
-            onToggleSort={toggleSort}
-            viewMode={viewMode}
-            storageKey={activeTableConfig.storageKey}
-            renderSummaryCells={activeTableConfig.renderSummaryCells}
-            renderDetailCells={activeTableConfig.renderDetailCells}
-            emptyMessage={activeTableConfig.emptyMessage}
-          />
+          <>
+            <InputTokensChart
+              period={period}
+            />
+            <UsageTable
+              title=""
+              columns={activeTableConfig.columns}
+              groupedData={activeTableConfig.groupedData}
+              tableType={tableView}
+              sortBy={sortBy}
+              sortOrder={sortOrder}
+              onToggleSort={toggleSort}
+              viewMode={viewMode}
+              storageKey={activeTableConfig.storageKey}
+              renderSummaryCells={activeTableConfig.renderSummaryCells}
+              renderDetailCells={activeTableConfig.renderDetailCells}
+              emptyMessage={activeTableConfig.emptyMessage}
+            />
+          </>
         )}
       </div>
     </div>

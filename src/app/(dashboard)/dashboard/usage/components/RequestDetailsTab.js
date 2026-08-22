@@ -6,6 +6,7 @@ import Button from "@/shared/components/Button";
 import Badge from "@/shared/components/Badge";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
+import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { cn } from "@/shared/utils/cn";
 import { getCachedTokens, getCacheCreationTokens, getPromptTokens } from "@/shared/utils/usageTokens";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
@@ -89,27 +90,40 @@ function getProviderName(providerId, cache) {
   return providerConfig?.name || providerId;
 }
 
-function CollapsibleSection({ title, children, defaultOpen = false, icon = null }) {
+function CollapsibleSection({ title, children, defaultOpen = false, icon = null, copyValue = null, copyId = null, copied = null, onCopy = null }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
-  
+
   return (
     <div className="border border-black/5 dark:border-white/5 rounded-lg overflow-hidden">
-      <button 
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between p-3 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors"
-      >
-        <div className="flex items-center gap-2">
-          {icon && <span className="material-symbols-outlined text-[18px] text-text-muted">{icon}</span>}
-          <span className="font-semibold text-sm text-text-main">{title}</span>
-        </div>
-        <span className={cn(
-          "material-symbols-outlined text-[20px] text-text-muted transition-transform duration-200",
-          isOpen ? "rotate-90" : ""
-        )}>
-          chevron_right
-        </span>
-      </button>
+      <div className="flex items-center bg-black/[0.02] dark:bg-white/[0.02]">
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className="flex min-w-0 flex-1 items-center justify-between p-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors"
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            {icon && <span className="material-symbols-outlined text-[18px] text-text-muted">{icon}</span>}
+            <span className="truncate font-semibold text-sm text-text-main">{title}</span>
+          </span>
+          <span className={cn(
+            "material-symbols-outlined text-[20px] text-text-muted transition-transform duration-200",
+            isOpen ? "rotate-90" : ""
+          )}>
+            chevron_right
+          </span>
+        </button>
+        {copyValue !== null && onCopy && (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={copied === copyId ? "check" : "content_copy"}
+            aria-label={`Copy ${title}`}
+            title={`Copy ${title}`}
+            className="mr-2 h-8 w-8 px-0"
+            onClick={() => onCopy(copyValue, copyId)}
+          />
+        )}
+      </div>
       
       {isOpen && (
         <div className="p-4 border-t border-black/5 dark:border-white/5">
@@ -122,6 +136,11 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon = null 
 
 function getInputTokens(tokens) {
   return getPromptTokens(tokens);
+}
+
+function formatJsonPayload(value) {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value ?? null, null, 2);
 }
 
 function getCacheKey(detail) {
@@ -143,6 +162,10 @@ function getCacheKey(detail) {
   const rq = detail.request;
   if (rq && typeof rq === "object" && !rq.redacted) {
     if (rq.prompt_cache_key) return String(rq.prompt_cache_key);
+    if (Array.isArray(rq._agent_metadata)) {
+      const session = rq._agent_metadata.find((item) => item?.key === "session-id")?.value;
+      if (session != null && String(session).trim() !== "") return String(session);
+    }
     if (rq.session_id) return String(rq.session_id);
   }
   return null;
@@ -177,6 +200,7 @@ function getConversationId(detail) {
   return null;
 }
 export default function RequestDetailsTab() {
+  const { copied, copy } = useCopyToClipboard();
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
     page: 1,
@@ -590,27 +614,46 @@ export default function RequestDetailsTab() {
             )}
 
             <div className="space-y-4">
-              <CollapsibleSection title="1. Client Request (Input)" defaultOpen={true} icon="input">
+              <CollapsibleSection
+                title="1. Client Request (Input)"
+                defaultOpen={true}
+                icon="input"
+                copyValue={formatJsonPayload(selectedDetail.request)}
+                copyId="client-request"
+                copied={copied}
+                onCopy={copy}
+              >
                 <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                  {JSON.stringify(selectedDetail.request, null, 2)}
+                  {formatJsonPayload(selectedDetail.request)}
                 </pre>
               </CollapsibleSection>
 
               {selectedDetail.providerRequest && (
-                <CollapsibleSection title="2. Provider Request (Translated)" icon="translate">
+                <CollapsibleSection
+                  title="2. Provider Request (Translated)"
+                  icon="translate"
+                  copyValue={formatJsonPayload(selectedDetail.providerRequest)}
+                  copyId="provider-request"
+                  copied={copied}
+                  onCopy={copy}
+                >
                   <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {JSON.stringify(selectedDetail.providerRequest, null, 2)}
+                    {formatJsonPayload(selectedDetail.providerRequest)}
                   </pre>
                 </CollapsibleSection>
               )}
 
               {selectedDetail.providerResponse && (
-                <CollapsibleSection title="3. Provider Response (Raw)" icon="data_object">
+                <CollapsibleSection
+                  title="3. Provider Response (Raw)"
+                  icon="data_object"
+                  copyValue={formatJsonPayload(selectedDetail.providerResponse)}
+                  copyId="provider-response"
+                  copied={copied}
+                  onCopy={copy}
+                >
                   <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {typeof selectedDetail.providerResponse === 'object'
-                      ? JSON.stringify(selectedDetail.providerResponse, null, 2)
-                      : selectedDetail.providerResponse
-                    }
+                    {formatJsonPayload(selectedDetail.providerResponse)}
                   </pre>
                 </CollapsibleSection>
               )}
