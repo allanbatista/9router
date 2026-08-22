@@ -1,11 +1,10 @@
 import mongoose from "mongoose";
-import { uuidv7 } from "../../../../open-sse/utils/uuid.js";
 
 const { Schema } = mongoose;
 
 export const RequestDetailSchema = new Schema(
   {
-    _id: { type: String, default: uuidv7 },
+    _id: { type: Schema.Types.ObjectId, auto: true },
     timestamp: { type: Date, required: true, index: true },
     provider: { type: String, default: null, index: true },
     model: { type: String, default: null, index: true },

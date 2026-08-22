@@ -40,7 +40,7 @@ export function parseArgs(args = process.argv.slice(2)) {
   const options = {
     sqlitePath: null,
     jsonPath: null,
-    mongoUri: process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/9router",
+    mongoUri: process.env.MONGODB_URI || "mongodb://127.0.0.1:29017/9router",
     dbName: process.env.MONGODB_DB_NAME || undefined,
     dryRun: false,
     wipe: false,

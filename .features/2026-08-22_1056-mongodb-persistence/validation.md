@@ -3,7 +3,7 @@
 Status: ready
 Spec: ./spec.md
 Plan: ./plan.md
-Updated: 2026-08-22 12:25
+Updated: 2026-08-22 15:07
 Guardian: approved
 
 > `Validation Plan` formulado **antes** de qualquer validação; `Validation Progress` item a item.
@@ -113,7 +113,7 @@ Um registro por item `V#`. O **manager de execução** (`batista-execute`) atual
 | V3 — Global Settings & Scoped Key-Value Storage | pass | settingsRepo e helpers/kvStore refatorados para Mongoose com operações atômicas; testes unitários em tests/unit/db-settings.test.js passando. | conferido |
 | V4 — Core Domain Entities Repositories | pass | connectionsRepo, nodesRepo, proxyPoolsRepo, apiKeysRepo, combosRepo refatorados para Mongoose com POJOs (.lean()); testes unitários passando em db-connections.test.js e db-core-repos.test.js. | conferido |
 | V5 — Telemetry, Token Metrics & Realtime Aggregation | pass | usageRepo refatorado com UsageDaily ($inc in-place) e UsageHistory; testes em tests/unit/db-usage.test.js passando com exit code 0. | conferido |
-| V6 — Request Details Observability Buffering & Batch Flush | pass | requestDetailsRepo refatorado com buffer em lote assíncrono e insertMany; testes em tests/unit/db-request-details.test.js passando. | conferido |
+| V6 — Request Details Observability Buffering & Batch Flush | pass | requestDetailsRepo refatorado com buffer em lote assíncrono e bulkWrite upsert atômico para capturar atualizações finais de stream; testes unitários passando. | conferido |
 | V7 — Session and Combo Affinity Round-Robin with TTL | pass | sessionAffinityRepo e comboAffinityRepo refatorados com delegação para TTL index Mongoose; testes em tests/unit/db-affinity.test.js passando. | conferido |
 | V8 — Snapshot Export/Import & Public DB Interface Full Fidelity | pass | exportDb e importDb reimplementados em src/lib/db/index.js com Mongoose; 5 testes em tests/unit/db-export-import.test.js passando. | conferido |
 | V9 — Standalone SQLite to MongoDB Migration CLI | pass | scripts/migrate-sqlite-to-mongo.mjs implementado e testado em tests/unit/db-migration-script.test.js com fixture SQLite/JSON passando. | conferido |

@@ -711,8 +711,20 @@ vi.mock("../../src/lib/db/models/RequestDetail.js", () => ({
       if (q.model) list = list.filter((r) => r.model === q.model);
       return store._makeQuery(Promise.resolve(store._clone(list)));
     },
+    findOne: (query = {}) => {
+      let found = null;
+      if (query.$or) {
+        for (const sub of query.$or) {
+          const match = store.requestDetails.find((r) => String(r._id) === String(sub._id));
+          if (match) { found = match; break; }
+        }
+      } else if (query._id) {
+        found = store.requestDetails.find((r) => String(r._id) === String(query._id));
+      }
+      return store._makeQuery(Promise.resolve(found ? store._clone(found) : null), true);
+    },
     findById: (id) => {
-      const doc = store.requestDetails.find((r) => r._id === id);
+      const doc = store.requestDetails.find((r) => String(r._id) === String(id));
       return store._makeQuery(Promise.resolve(store._clone(doc)), true);
     },
     insertMany: async (docs) => {
@@ -720,6 +732,18 @@ vi.mock("../../src/lib/db/models/RequestDetail.js", () => ({
         store.requestDetails.unshift({ ...store._clone(d), _id: d._id || `rd_${Math.random().toString(36).slice(2, 9)}` });
       }
       return docs;
+    },
+    bulkWrite: async (ops = []) => {
+      for (const op of ops) {
+        if (op.updateOne) {
+          const id = op.updateOne.filter?._id;
+          const doc = op.updateOne.update?.$set;
+          const idx = store.requestDetails.findIndex((d) => d._id === id);
+          if (idx >= 0) store.requestDetails[idx] = { ...doc };
+          else if (op.updateOne.upsert) store.requestDetails.unshift({ ...doc });
+        }
+      }
+      return { ok: 1 };
     },
     countDocuments: async (q = {}) => {
       let list = [...store.requestDetails];

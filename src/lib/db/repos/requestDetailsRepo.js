@@ -1,4 +1,4 @@
-import { v7 as uuidv7 } from "uuid";
+import mongoose from "mongoose";
 import { getConnection } from "../connection.js";
 import { RequestDetail } from "../models/RequestDetail.js";
 
@@ -71,8 +71,8 @@ function sanitizeHeaders(headers) {
 
 export const __test__ = { sanitizeHeaders, getWriteBuffer: () => writeBuffer, clearWriteBuffer: () => { writeBuffer = []; } };
 
-function generateDetailId(_model) {
-  return uuidv7();
+function generateDetailId() {
+  return new mongoose.Types.ObjectId().toHexString();
 }
 
 function truncateField(obj, maxSize) {
@@ -111,8 +111,9 @@ function restoreErrorProviderResponse(detail) {
 function docToDetail(doc) {
   if (!doc) return null;
   const data = doc.data && typeof doc.data === "object" ? doc.data : {};
+  const idStr = String(doc._id || data.id || "");
   const detail = {
-    id: doc._id || data.id,
+    id: idStr,
     timestamp: doc.timestamp instanceof Date ? doc.timestamp.toISOString() : (doc.timestamp || data.timestamp),
     provider: doc.provider ?? data.provider ?? null,
     model: doc.model ?? data.model ?? null,
@@ -141,7 +142,7 @@ export async function flushToDatabase() {
       const config = await getObservabilityConfig();
 
       const docsToInsert = items.map((item) => {
-        const id = item.id || generateDetailId(item.model);
+        const id = item.id || generateDetailId();
         const timestamp = item.timestamp ? new Date(item.timestamp) : new Date();
         if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
 
@@ -175,7 +176,14 @@ export async function flushToDatabase() {
       });
 
       if (docsToInsert.length > 0) {
-        await RequestDetail.insertMany(docsToInsert, { ordered: false });
+        const ops = docsToInsert.map((doc) => ({
+          updateOne: {
+            filter: { _id: String(doc._id) },
+            update: { $set: doc },
+            upsert: true,
+          },
+        }));
+        await RequestDetail.bulkWrite(ops, { ordered: false });
       }
 
       const count = await RequestDetail.countDocuments();
@@ -270,10 +278,12 @@ export async function getDistinctProviders() {
 export async function getRequestDetailById(id) {
   if (!id) return null;
   await getConnection();
-  const doc = await RequestDetail.findById(id).lean();
+  const query = mongoose.Types.ObjectId.isValid(id)
+    ? { $or: [{ _id: new mongoose.Types.ObjectId(id) }, { _id: String(id) }] }
+    : { _id: String(id) };
+  const doc = await RequestDetail.findOne(query).lean();
   return doc ? docToDetail(doc) : null;
 }
-
 const _shutdownHandler = async () => {
   if (flushTimer) {
     clearTimeout(flushTimer);

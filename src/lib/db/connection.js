@@ -15,7 +15,7 @@ const cached = global._mongooseConnection;
  * @returns {{ uri: string, dbName?: string, maxPoolSize: number, serverSelectionTimeoutMS: number }}
  */
 export function getMongoConfig() {
-  const uri = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/9router";
+  const uri = process.env.MONGODB_URI || "mongodb://127.0.0.1:29017/9router";
   const dbName = process.env.MONGODB_DB_NAME || undefined;
   const maxPoolSize = parseInt(process.env.MONGODB_MAX_POOL_SIZE || "20", 10);
   const serverSelectionTimeoutMS = parseInt(process.env.MONGODB_TIMEOUT_MS || "5000", 10);

@@ -63,6 +63,37 @@ class InMemoryRequestDetailCollection {
     }
     return docs;
   }
+  async bulkWrite(ops) {
+    for (const op of ops) {
+      if (op.updateOne) {
+        const id = op.updateOne.filter._id;
+        const doc = op.updateOne.update.$set;
+        const idx = this.docs.findIndex((d) => d._id === id);
+        if (idx >= 0) {
+          this.docs[idx] = this._clone(doc);
+        } else if (op.updateOne.upsert) {
+          this.docs.unshift(this._clone(doc));
+        }
+      }
+    }
+    return { ok: 1 };
+  }
+
+  findOne(query = {}) {
+    const p = (async () => {
+      let found = null;
+      if (query.$or) {
+        for (const sub of query.$or) {
+          const match = this.docs.find((d) => String(d._id) === String(sub._id));
+          if (match) { found = match; break; }
+        }
+      } else if (query._id) {
+        found = this.docs.find((d) => String(d._id) === String(query._id));
+      }
+      return found ? this._clone(found) : null;
+    })();
+    return this._makeQuery(p);
+  }
 
   find(query = {}) {
     const p = (async () => {
@@ -126,10 +157,12 @@ vi.mock("../../src/lib/db/models/RequestDetail.js", () => ({
   RequestDetail: {
     insertMany: (docs, opts) => mockRequestDetailCollection.insertMany(docs, opts),
     find: (q) => mockRequestDetailCollection.find(q),
+    findOne: (q) => mockRequestDetailCollection.findOne(q),
     findById: (id) => mockRequestDetailCollection.findById(id),
     countDocuments: (q) => mockRequestDetailCollection.countDocuments(q),
     distinct: (f, q) => mockRequestDetailCollection.distinct(f, q),
     deleteMany: (q) => mockRequestDetailCollection.deleteMany(q),
+    bulkWrite: (ops, opts) => mockRequestDetailCollection.bulkWrite(ops, opts),
   },
 }));
 
