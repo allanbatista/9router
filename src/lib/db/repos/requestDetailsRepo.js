@@ -1,6 +1,6 @@
 import { v7 as uuidv7 } from "uuid";
-import { getAdapter } from "../driver.js";
-import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { getConnection } from "../connection.js";
+import { RequestDetail } from "../models/RequestDetail.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -69,7 +69,7 @@ function sanitizeHeaders(headers) {
   return sanitized;
 }
 
-export const __test__ = { sanitizeHeaders };
+export const __test__ = { sanitizeHeaders, getWriteBuffer: () => writeBuffer, clearWriteBuffer: () => { writeBuffer = []; } };
 
 function generateDetailId(_model) {
   return uuidv7();
@@ -102,60 +102,95 @@ function restoreErrorProviderResponse(detail) {
     ...detail,
     providerResponse: {
       status,
-      body: typeof error === "string" ? error : stringifyJson(error),
+      body: typeof error === "string" ? error : JSON.stringify(error),
       recoveredFromStoredError: true,
     },
   };
 }
 
-async function flushToDatabase() {
+function docToDetail(doc) {
+  if (!doc) return null;
+  const data = doc.data && typeof doc.data === "object" ? doc.data : {};
+  const detail = {
+    id: doc._id || data.id,
+    timestamp: doc.timestamp instanceof Date ? doc.timestamp.toISOString() : (doc.timestamp || data.timestamp),
+    provider: doc.provider ?? data.provider ?? null,
+    model: doc.model ?? data.model ?? null,
+    connectionId: doc.connectionId ?? data.connectionId ?? null,
+    status: doc.status ?? data.status ?? null,
+    latency: data.latency || {},
+    tokens: data.tokens || {},
+    request: data.request || {},
+    providerRequest: data.providerRequest ?? null,
+    providerResponse: data.providerResponse ?? null,
+    response: data.response || {},
+    error: data.error ?? null,
+    ...(data.pxpipe ? { pxpipe: data.pxpipe } : {}),
+  };
+  return restoreErrorProviderResponse(detail);
+}
+
+export async function flushToDatabase() {
   if (isFlushing) return;
   if (writeBuffer.length === 0) return;
   isFlushing = true;
   try {
     while (writeBuffer.length > 0) {
       const items = writeBuffer.splice(0, writeBuffer.length);
-      const db = await getAdapter();
+      await getConnection();
       const config = await getObservabilityConfig();
 
-      db.transaction(() => {
-        for (const item of items) {
-          if (!item.id) item.id = generateDetailId(item.model);
-          if (!item.timestamp) item.timestamp = new Date().toISOString();
-          if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
+      const docsToInsert = items.map((item) => {
+        const id = item.id || generateDetailId(item.model);
+        const timestamp = item.timestamp ? new Date(item.timestamp) : new Date();
+        if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
 
-          const is4xx = is4xxStatus(item.status) || is4xxStatus(item.response?.status);
-          const record = {
-            id: item.id,
-            provider: item.provider || null,
-            model: item.model || null,
-            connectionId: item.connectionId || null,
-            timestamp: item.timestamp,
-            status: item.status || null,
-            latency: item.latency || {},
-            tokens: item.tokens || {},
-            request: is4xx ? (item.request || {}) : truncateField(item.request, config.maxJsonSize),
-            providerRequest: is4xx ? (item.providerRequest || null) : truncateField(item.providerRequest, config.maxJsonSize),
-            providerResponse: is4xx ? (item.providerResponse ?? null) : truncateField(item.providerResponse, config.maxJsonSize),
-            response: is4xx ? (item.response ?? {}) : truncateField(item.response, config.maxJsonSize),
-            error: item.error || null,
-            pxpipe: item.pxpipe || undefined,
-          };
+        const is4xx = is4xxStatus(item.status) || is4xxStatus(item.response?.status);
+        const record = {
+          id,
+          provider: item.provider || null,
+          model: item.model || null,
+          connectionId: item.connectionId || null,
+          timestamp: timestamp.toISOString(),
+          status: item.status || null,
+          latency: item.latency || {},
+          tokens: item.tokens || {},
+          request: is4xx ? (item.request || {}) : truncateField(item.request, config.maxJsonSize),
+          providerRequest: is4xx ? (item.providerRequest || null) : truncateField(item.providerRequest, config.maxJsonSize),
+          providerResponse: is4xx ? (item.providerResponse ?? null) : truncateField(item.providerResponse, config.maxJsonSize),
+          response: is4xx ? (item.response ?? {}) : truncateField(item.response, config.maxJsonSize),
+          error: item.error || null,
+          pxpipe: item.pxpipe || undefined,
+        };
 
-          db.run(
-            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data`,
-            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
-          );
-        }
-
-        const cnt = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
-        if (cnt && cnt.c > config.maxRecords) {
-          db.run(
-            `DELETE FROM requestDetails WHERE id IN (SELECT id FROM requestDetails ORDER BY timestamp ASC LIMIT ?)`,
-            [cnt.c - config.maxRecords]
-          );
-        }
+        return {
+          _id: id,
+          timestamp,
+          provider: record.provider,
+          model: record.model,
+          connectionId: record.connectionId,
+          status: record.status,
+          data: record,
+        };
       });
+
+      if (docsToInsert.length > 0) {
+        await RequestDetail.insertMany(docsToInsert, { ordered: false });
+      }
+
+      const count = await RequestDetail.countDocuments();
+      if (count > config.maxRecords) {
+        const excess = count - config.maxRecords;
+        const oldestDocs = await RequestDetail.find({})
+          .sort({ timestamp: 1 })
+          .limit(excess)
+          .select("_id")
+          .lean();
+        if (oldestDocs.length > 0) {
+          const idsToDelete = oldestDocs.map((d) => d._id);
+          await RequestDetail.deleteMany({ _id: { $in: idsToDelete } });
+        }
+      }
     }
   } catch (e) {
     console.error("[requestDetailsRepo] Batch write failed:", e);
@@ -166,68 +201,84 @@ async function flushToDatabase() {
 
 export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
-  if (!config.enabled) {return;}
+  if (!config.enabled) return;
 
   writeBuffer.push(detail);
 
   if (writeBuffer.length >= config.batchSize) {
-    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
     flushToDatabase().catch((e) => console.error("[requestDetailsRepo] flush err:", e));
   } else if (!flushTimer) {
     flushTimer = setTimeout(() => {
       flushTimer = null;
       flushToDatabase().catch(() => {});
     }, config.flushIntervalMs);
+    if (flushTimer.unref) flushTimer.unref();
   }
 }
 
 export async function getRequestDetails(filter = {}) {
-  const db = await getAdapter();
-  const conds = [];
-  const params = [];
+  await getConnection();
+  const query = {};
 
-  if (filter.provider) { conds.push("provider = ?"); params.push(filter.provider); }
-  if (filter.model) { conds.push("model = ?"); params.push(filter.model); }
-  if (filter.connectionId) { conds.push("connectionId = ?"); params.push(filter.connectionId); }
-  if (filter.status) { conds.push("status = ?"); params.push(filter.status); }
-  if (filter.startDate) { conds.push("timestamp >= ?"); params.push(new Date(filter.startDate).toISOString()); }
-  if (filter.endDate) { conds.push("timestamp <= ?"); params.push(new Date(filter.endDate).toISOString()); }
+  if (filter.provider) query.provider = filter.provider;
+  if (filter.model) query.model = filter.model;
+  if (filter.connectionId) query.connectionId = filter.connectionId;
+  if (filter.status) query.status = filter.status;
+  if (filter.startDate || filter.endDate) {
+    query.timestamp = {};
+    if (filter.startDate) query.timestamp.$gte = new Date(filter.startDate);
+    if (filter.endDate) query.timestamp.$lte = new Date(filter.endDate);
+  }
 
-  const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-  const cntRow = db.get(`SELECT COUNT(*) as c FROM requestDetails ${where}`, params);
-  const totalItems = cntRow ? cntRow.c : 0;
-
+  const totalItems = await RequestDetail.countDocuments(query);
   const page = filter.page || 1;
   const pageSize = filter.pageSize || 50;
-  const totalPages = Math.ceil(totalItems / pageSize);
+  const totalPages = Math.ceil(totalItems / pageSize) || 0;
   const offset = (page - 1) * pageSize;
 
-  const rows = db.all(
-    `SELECT data FROM requestDetails ${where} ORDER BY julianday(timestamp) DESC, timestamp DESC, id DESC LIMIT ? OFFSET ?`,
-    [...params, pageSize, offset]
-  );
-  const details = rows.map((r) => restoreErrorProviderResponse(parseJson(r.data, {})));
+  const docs = await RequestDetail.find(query)
+    .sort({ timestamp: -1, _id: -1 })
+    .skip(offset)
+    .limit(pageSize)
+    .lean();
+
+  const details = docs.map(docToDetail);
 
   return {
     details,
-    pagination: { page, pageSize, totalItems, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
+    pagination: {
+      page,
+      pageSize,
+      totalItems,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrev: page > 1,
+    },
   };
 }
 
 export async function getDistinctProviders() {
-  const db = await getAdapter();
-  const rows = db.all(`SELECT DISTINCT provider FROM requestDetails WHERE provider IS NOT NULL ORDER BY provider ASC`);
-  return rows.map((r) => r.provider);
+  await getConnection();
+  const providers = await RequestDetail.distinct("provider", { provider: { $ne: null } });
+  return (providers || []).filter(Boolean).sort();
 }
 
 export async function getRequestDetailById(id) {
-  const db = await getAdapter();
-  const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
-  return row ? restoreErrorProviderResponse(parseJson(row.data, null)) : null;
+  if (!id) return null;
+  await getConnection();
+  const doc = await RequestDetail.findById(id).lean();
+  return doc ? docToDetail(doc) : null;
 }
 
 const _shutdownHandler = async () => {
-  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
   if (writeBuffer.length > 0) await flushToDatabase();
 };
 

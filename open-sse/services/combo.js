@@ -229,6 +229,31 @@ export async function getRotatedModels(models, comboName, strategy, stickyLimit 
   if (strategy !== "round-robin") {
     return models;
   }
+
+  const rotationKey = comboName || "__default__";
+  const normalizedStickyLimit = normalizeStickyLimit(stickyLimit);
+  const existingState = comboRotationState.get(rotationKey);
+  const state = typeof existingState === "number"
+    ? { index: existingState, consecutiveUseCount: 0 }
+    : (existingState || { index: 0, consecutiveUseCount: 0 });
+
+  const currentIndex = state.index % models.length;
+  const rotatedModels = rotateModelsFromIndex(models, currentIndex);
+  const nextUseCount = state.consecutiveUseCount + 1;
+
+  if (nextUseCount >= normalizedStickyLimit) {
+    comboRotationState.set(rotationKey, {
+      index: (currentIndex + 1) % models.length,
+      consecutiveUseCount: 0,
+    });
+  } else {
+    comboRotationState.set(rotationKey, {
+      index: currentIndex,
+      consecutiveUseCount: nextUseCount,
+    });
+  }
+
+  return rotatedModels;
 }
 
 /**

@@ -7,12 +7,14 @@ describe("combo round-robin routing", () => {
     resetComboRotation();
   });
 
-  it("keeps existing one-request round-robin behavior by default", () => {
+  it("keeps existing one-request round-robin behavior by default", async () => {
     const models = ["provider/model-a", "provider/model-b"];
 
-    const firstChoices = Array.from({ length: 4 }, () => (
-      getRotatedModels(models, "code-xhigh", "round-robin")[0]
-    ));
+    const firstChoices = [];
+    for (let i = 0; i < 4; i++) {
+      const rotated = await getRotatedModels(models, "code-xhigh", "round-robin");
+      firstChoices.push(rotated[0]);
+    }
 
     expect(firstChoices).toEqual([
       "provider/model-a",
@@ -22,12 +24,14 @@ describe("combo round-robin routing", () => {
     ]);
   });
 
-  it("sticks to each combo model for the configured number of requests", () => {
+  it("sticks to each combo model for the configured number of requests", async () => {
     const models = ["provider/model-a", "provider/model-b"];
 
-    const firstChoices = Array.from({ length: 6 }, () => (
-      getRotatedModels(models, "code-xhigh", "round-robin", 2)[0]
-    ));
+    const firstChoices = [];
+    for (let i = 0; i < 6; i++) {
+      const rotated = await getRotatedModels(models, "code-xhigh", "round-robin", 2);
+      firstChoices.push(rotated[0]);
+    }
 
     expect(firstChoices).toEqual([
       "provider/model-a",
@@ -39,20 +43,20 @@ describe("combo round-robin routing", () => {
     ]);
   });
 
-  it("tracks sticky rotation independently per combo", () => {
+  it("tracks sticky rotation independently per combo", async () => {
     const models = ["provider/model-a", "provider/model-b"];
 
-    expect(getRotatedModels(models, "code-high", "round-robin", 2)[0]).toBe("provider/model-a");
-    expect(getRotatedModels(models, "code-xhigh", "round-robin", 2)[0]).toBe("provider/model-a");
-    expect(getRotatedModels(models, "code-high", "round-robin", 2)[0]).toBe("provider/model-a");
-    expect(getRotatedModels(models, "code-high", "round-robin", 2)[0]).toBe("provider/model-b");
-    expect(getRotatedModels(models, "code-xhigh", "round-robin", 2)[0]).toBe("provider/model-a");
+    expect((await getRotatedModels(models, "code-high", "round-robin", 2))[0]).toBe("provider/model-a");
+    expect((await getRotatedModels(models, "code-xhigh", "round-robin", 2))[0]).toBe("provider/model-a");
+    expect((await getRotatedModels(models, "code-high", "round-robin", 2))[0]).toBe("provider/model-a");
+    expect((await getRotatedModels(models, "code-high", "round-robin", 2))[0]).toBe("provider/model-b");
+    expect((await getRotatedModels(models, "code-xhigh", "round-robin", 2))[0]).toBe("provider/model-a");
   });
 
-  it("does not rotate fallback combos", () => {
+  it("does not rotate fallback combos", async () => {
     const models = ["provider/model-a", "provider/model-b"];
 
-    expect(getRotatedModels(models, "code-xhigh", "fallback", 2)).toEqual(models);
-    expect(getRotatedModels(models, "code-xhigh", "fallback", 2)).toEqual(models);
+    expect(await getRotatedModels(models, "code-xhigh", "fallback", 2)).toEqual(models);
+    expect(await getRotatedModels(models, "code-xhigh", "fallback", 2)).toEqual(models);
   });
 });

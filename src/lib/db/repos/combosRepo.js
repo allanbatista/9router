@@ -1,73 +1,83 @@
 import { v4 as uuidv4 } from "uuid";
-import { getAdapter } from "../driver.js";
-import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { getConnection } from "../connection.js";
+import { Combo } from "../models/Combo.js";
 
-function rowToCombo(row) {
-  if (!row) return null;
+function docToCombo(doc) {
+  if (!doc) return null;
   return {
-    id: row.id,
-    name: row.name,
-    kind: row.kind,
-    models: parseJson(row.models, []),
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    id: doc._id,
+    name: doc.name,
+    kind: doc.kind,
+    models: Array.isArray(doc.models) ? doc.models : [],
+    createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : (doc.createdAt || new Date().toISOString()),
+    updatedAt: doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : (doc.updatedAt || new Date().toISOString()),
   };
 }
 
 export async function getCombos() {
-  const db = await getAdapter();
-  const rows = db.all(`SELECT * FROM combos ORDER BY createdAt ASC`);
-  return rows.map(rowToCombo);
+  await getConnection();
+  const docs = await Combo.find({}).sort({ createdAt: 1 }).lean();
+  return docs.map(docToCombo);
 }
 
 export async function getComboById(id) {
-  const db = await getAdapter();
-  const row = db.get(`SELECT * FROM combos WHERE id = ?`, [id]);
-  return rowToCombo(row);
+  if (!id) return null;
+  await getConnection();
+  const doc = await Combo.findById(id).lean();
+  return docToCombo(doc);
 }
 
 export async function getComboByName(name) {
-  const db = await getAdapter();
-  const row = db.get(`SELECT * FROM combos WHERE name = ?`, [name]);
-  return rowToCombo(row);
+  if (!name) return null;
+  await getConnection();
+  const doc = await Combo.findOne({ name }).lean();
+  return docToCombo(doc);
 }
 
 export async function createCombo(data) {
-  const db = await getAdapter();
-  const now = new Date().toISOString();
-  const combo = {
-    id: uuidv4(),
+  await getConnection();
+  const now = new Date();
+  const comboDoc = {
+    _id: uuidv4(),
     name: data.name,
     kind: data.kind || null,
     models: data.models || [],
     createdAt: now,
     updatedAt: now,
   };
-  db.run(
-    `INSERT INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
-    [combo.id, combo.name, combo.kind, stringifyJson(combo.models), combo.createdAt, combo.updatedAt]
-  );
-  return combo;
+
+  await Combo.create(comboDoc);
+  return docToCombo(comboDoc);
 }
 
-export async function updateCombo(id, data) {
-  const db = await getAdapter();
-  let result = null;
-  db.transaction(() => {
-    const row = db.get(`SELECT * FROM combos WHERE id = ?`, [id]);
-    if (!row) return;
-    const merged = { ...rowToCombo(row), ...data, updatedAt: new Date().toISOString() };
-    db.run(
-      `UPDATE combos SET name = ?, kind = ?, models = ?, updatedAt = ? WHERE id = ?`,
-      [merged.name, merged.kind, stringifyJson(merged.models || []), merged.updatedAt, id]
-    );
-    result = merged;
-  });
-  return result;
+export async function updateCombo(id, data = {}) {
+  if (!id) return null;
+  await getConnection();
+  const existingDoc = await Combo.findById(id).lean();
+  if (!existingDoc) return null;
+
+  const existing = docToCombo(existingDoc);
+  const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+
+  await Combo.findByIdAndUpdate(
+    id,
+    {
+      $set: {
+        name: merged.name,
+        kind: merged.kind,
+        models: merged.models || [],
+        updatedAt: new Date(),
+      },
+    },
+    { new: true }
+  ).lean();
+
+  return merged;
 }
 
 export async function deleteCombo(id) {
-  const db = await getAdapter();
-  const res = db.run(`DELETE FROM combos WHERE id = ?`, [id]);
-  return (res?.changes ?? 0) > 0;
+  if (!id) return false;
+  await getConnection();
+  const res = await Combo.deleteOne({ _id: id });
+  return (res.deletedCount || 0) > 0;
 }

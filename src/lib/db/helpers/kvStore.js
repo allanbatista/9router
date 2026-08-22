@@ -1,39 +1,52 @@
-import { getAdapter } from "../driver.js";
-import { parseJson, stringifyJson } from "./jsonCol.js";
+import { getConnection } from "../connection.js";
+import { KvEntry } from "../models/KvEntry.js";
 
 export function makeKv(scope) {
   return {
     async get(key, fallback = null) {
-      const db = await getAdapter();
-      const row = db.get(`SELECT value FROM kv WHERE scope = ? AND key = ?`, [scope, key]);
-      return row ? parseJson(row.value, fallback) : fallback;
+      await getConnection();
+      const doc = await KvEntry.findOne({ scope, key }).lean();
+      return doc ? (doc.value !== undefined ? doc.value : fallback) : fallback;
     },
     async getAll() {
-      const db = await getAdapter();
-      const rows = db.all(`SELECT key, value FROM kv WHERE scope = ?`, [scope]);
+      await getConnection();
+      const docs = await KvEntry.find({ scope }).lean();
       const out = {};
-      for (const r of rows) out[r.key] = parseJson(r.value);
+      for (const d of docs) {
+        out[d.key] = d.value;
+      }
       return out;
     },
     async set(key, value) {
-      const db = await getAdapter();
-      db.run(`INSERT INTO kv(scope, key, value) VALUES(?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`, [scope, key, stringifyJson(value)]);
+      await getConnection();
+      await KvEntry.findOneAndUpdate(
+        { scope, key },
+        { $set: { value, updatedAt: new Date() } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
     },
     async setMany(obj) {
-      const db = await getAdapter();
-      db.transaction(() => {
-        for (const [k, v] of Object.entries(obj)) {
-          db.run(`INSERT INTO kv(scope, key, value) VALUES(?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`, [scope, k, stringifyJson(v)]);
-        }
-      });
+      if (!obj || typeof obj !== "object") return;
+      await getConnection();
+      const entries = Object.entries(obj);
+      if (entries.length === 0) return;
+      const now = new Date();
+      const operations = entries.map(([k, v]) => ({
+        updateOne: {
+          filter: { scope, key: k },
+          update: { $set: { value: v, updatedAt: now } },
+          upsert: true,
+        },
+      }));
+      await KvEntry.bulkWrite(operations);
     },
     async remove(key) {
-      const db = await getAdapter();
-      db.run(`DELETE FROM kv WHERE scope = ? AND key = ?`, [scope, key]);
+      await getConnection();
+      await KvEntry.deleteOne({ scope, key });
     },
     async clear() {
-      const db = await getAdapter();
-      db.run(`DELETE FROM kv WHERE scope = ?`, [scope]);
+      await getConnection();
+      await KvEntry.deleteMany({ scope });
     },
   };
 }
