@@ -86,10 +86,10 @@ export default function InputTokensChart({ period }) {
                 borderRadius: "8px",
                 fontSize: "12px",
               }}
-              formatter={(value, name) => [formatTokens(value), name === "cachedTokens" ? "Cached" : "Without cache"]}
+              formatter={(value, name) => [formatTokens(value), name]}
             />
-            <Bar dataKey="uncachedInputTokens" name="Without cache" stackId="input" fill="#6366f1" radius={[0, 0, 0, 0]} />
-            <Bar dataKey="cachedTokens" name="Cached" stackId="input" fill="#06b6d4" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="uncachedInputTokens" name="Without cache" stackId="input" fill="var(--color-primary)" radius={[0, 0, 0, 0]} />
+            <Bar dataKey="cachedTokens" name="Cached" stackId="input" fill="var(--color-info)" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       )}
