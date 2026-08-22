@@ -15,11 +15,12 @@ flowchart LR
   UI[RequestDetailsTab] --> API[/api/usage/request-details]
   API --> REPO[requestDetailsRepo]
   REPO --> DB[(requestDetails)]
+  STREAM[streamingHandler/streamHandler] --> REPO
 ```
 
 ## Fluxo
 
-A API valida paginação e filtros, o repositório ordena os registros pelo instante UTC equivalente e a UI apresenta os resultados em páginas.
+A API valida paginação e filtros, o repositório ordena os registros pelo instante UTC equivalente e a UI apresenta os resultados em páginas. Streams são inseridos como `streaming` e finalizados como `success`, `aborted` (`client_closed`) ou `error`.
 
 ## Fontes no código
 
@@ -28,3 +29,6 @@ A API valida paginação e filtros, o repositório ordena os registros pelo inst
 - `src/app/api/usage/request-details/route.js`
 - `src/lib/db/repos/requestDetailsRepo.js`
 - `src/lib/db/schema.js`
+- `open-sse/handlers/chatCore/streamingHandler.js`
+- `open-sse/utils/stream.js`
+- `open-sse/utils/streamHandler.js`
