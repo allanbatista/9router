@@ -6,7 +6,8 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
-
+import { getComboAffinity, setComboAffinity, touchComboAffinity } from "@/lib/db/repos/comboAffinityRepo.js";
+import { consistentIndex } from "@/lib/db/repos/sessionAffinityRepo.js";
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
 const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
@@ -196,44 +197,38 @@ function rotateModelsFromIndex(models, currentIndex) {
   }
   return rotatedModels;
 }
-
 /**
  * Get rotated model list based on strategy
  * @param {string[]} models - Array of model strings
  * @param {string} comboName - Name of the combo
- * @param {string} strategy - "fallback" or "round-robin"
+ * @param {string} strategy - "fallback" | "round-robin" | "round-robin-affinity" | "fusion"
  * @param {number|string} [stickyLimit=1] - Requests per combo model before switching
- * @returns {string[]} Rotated models array
+ * @param {string|null} [cacheKeyHash=null] - sha16(normalized) for affinity
+ * @param {string|null} [rawKey=null] - raw session/cache key for display
+ * @returns {Promise<string[]>} Rotated models array
  */
-export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
-  if (!models || models.length <= 1 || strategy !== "round-robin") {
+export async function getRotatedModels(models, comboName, strategy, stickyLimit = 1, cacheKeyHash = null, rawKey = null) {
+  if (!models || models.length <= 1) return models;
+  if (strategy === "round-robin-affinity" && cacheKeyHash) {
+    const key = comboName || "__default__";
+    try {
+      const aff = await getComboAffinity(key, cacheKeyHash);
+      if (aff && models.includes(aff.selectedModel)) {
+        await touchComboAffinity(key, cacheKeyHash);
+        const idx = models.indexOf(aff.selectedModel);
+        return rotateModelsFromIndex(models, idx);
+      }
+      const idx = consistentIndex(cacheKeyHash, models.length);
+      const selected = models[idx];
+      await setComboAffinity(key, cacheKeyHash, rawKey || cacheKeyHash, selected);
+      return rotateModelsFromIndex(models, idx);
+    } catch {}
+    const idx = consistentIndex(cacheKeyHash, models.length);
+    return rotateModelsFromIndex(models, idx);
+  }
+  if (strategy !== "round-robin") {
     return models;
   }
-
-  const rotationKey = comboName || "__default__";
-  const normalizedStickyLimit = normalizeStickyLimit(stickyLimit);
-  const existingState = comboRotationState.get(rotationKey);
-  const state = typeof existingState === "number"
-    ? { index: existingState, consecutiveUseCount: 0 }
-    : (existingState || { index: 0, consecutiveUseCount: 0 });
-
-  const currentIndex = state.index % models.length;
-  const rotatedModels = rotateModelsFromIndex(models, currentIndex);
-  const nextUseCount = state.consecutiveUseCount + 1;
-
-  if (nextUseCount >= normalizedStickyLimit) {
-    comboRotationState.set(rotationKey, {
-      index: (currentIndex + 1) % models.length,
-      consecutiveUseCount: 0,
-    });
-  } else {
-    comboRotationState.set(rotationKey, {
-      index: currentIndex,
-      consecutiveUseCount: nextUseCount,
-    });
-  }
-
-  return rotatedModels;
 }
 
 /**
@@ -277,9 +272,14 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
-  // Apply rotation strategy if enabled
-  let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, cacheKeyHash = null, rawKey = null }) {
+  // Apply rotation strategy — affinity branch needs async lookup; others sync
+  let rotatedModels;
+  if (comboStrategy === "round-robin-affinity" && models.length > 1) {
+    rotatedModels = await getRotatedModels(models, comboName, comboStrategy, comboStickyLimit, cacheKeyHash, rawKey);
+  } else {
+    rotatedModels = await getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+  }
 
   // Auto-switch: float models that satisfy the request's required capabilities to the front.
   if (autoSwitch) {
@@ -292,7 +292,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       rotatedModels = reordered;
     }
   }
-  
+
   let lastError = null;
   let earliestRetryAfter = null;
   let lastStatus = null;

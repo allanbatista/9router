@@ -10,7 +10,8 @@ const OPTIONAL_PARAMS = [
   "seed", "stop", "tools", "tool_choice",
   "response_format", "prediction", "store", "metadata",
   "n", "logprobs", "top_logprobs", "logit_bias",
-  "user", "parallel_tool_calls"
+  "user", "parallel_tool_calls",
+  "prompt_cache_key", "session_id", "conversation_id"
 ];
 
 export function extractRequestConfig(body, stream) {

@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 3;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -150,6 +150,36 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
       "CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+    ],
+  },
+  sessionAffinity: {
+    columns: {
+      provider: "TEXT NOT NULL",
+      model: "TEXT NOT NULL",
+      cacheKeyHash: "TEXT NOT NULL",
+      rawKey: "TEXT NOT NULL",
+      connectionId: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+      hitCount: "INTEGER NOT NULL DEFAULT 1",
+    },
+    primaryKey: "PRIMARY KEY (provider, model, cacheKeyHash)",
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_sa_updatedAt ON sessionAffinity(updatedAt)",
+      "CREATE INDEX IF NOT EXISTS idx_sa_conn ON sessionAffinity(connectionId)",
+    ],
+  },
+  comboAffinity: {
+    columns: {
+      comboName: "TEXT NOT NULL",
+      cacheKeyHash: "TEXT NOT NULL",
+      rawKey: "TEXT NOT NULL",
+      selectedModel: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+      hitCount: "INTEGER NOT NULL DEFAULT 1",
+    },
+    primaryKey: "PRIMARY KEY (comboName, cacheKeyHash)",
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ca_updatedAt ON comboAffinity(updatedAt)",
     ],
   },
 };

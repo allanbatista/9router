@@ -1448,11 +1448,25 @@ export default function ProfilePage() {
               <Toggle
                 checked={settings.fallbackStrategy === "round-robin"}
                 onChange={() => updateFallbackStrategy(settings.fallbackStrategy === "round-robin" ? "fill-first" : "round-robin")}
+                disabled={loading || settings.fallbackStrategy === "round-robin-affinity"}
+              />
+            </div>
+
+            <div className="flex items-start sm:items-center justify-between gap-4 pt-3 border-t border-border/50">
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm sm:text-base">Round Robin — Affinity <span className="text-xs font-normal text-text-muted">(cache-aware)</span></p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  Sticky per session/cache key, per model (30m TTL). Keeps same session on same account to maximize prompt cache hits; repins if account gets rate-limited.
+                </p>
+              </div>
+              <Toggle
+                checked={settings.fallbackStrategy === "round-robin-affinity"}
+                onChange={() => updateFallbackStrategy(settings.fallbackStrategy === "round-robin-affinity" ? "fill-first" : "round-robin-affinity")}
                 disabled={loading}
               />
             </div>
 
-            {/* Sticky Round Robin Limit */}
+            {/* Sticky Round Robin Limit — only for plain round-robin */}
             {settings.fallbackStrategy === "round-robin" && (
               <div className="flex items-start sm:items-center justify-between gap-4 pt-2 border-t border-border/50">
                 <div className="flex-1 min-w-0">
@@ -1473,22 +1487,28 @@ export default function ProfilePage() {
               </div>
             )}
 
-            {/* Combo Round Robin */}
-            <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base">Combo Round Robin</p>
-                <p className="text-xs sm:text-sm text-text-muted">
-                  Cycle through providers in combos instead of always starting with first
-                </p>
+            {/* Combo Strategy — 4 opts like provider */}
+            <div className="flex flex-col gap-2 pt-4 border-t border-border/50">
+              <div className="flex items-start sm:items-center justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-sm sm:text-base">Combo Strategy</p>
+                  <p className="text-xs sm:text-sm text-text-muted">How combos pick the next model — fallback, rotate or cache-aware affinity</p>
+                </div>
+                <select
+                  value={settings.comboStrategy || "fallback"}
+                  onChange={(e) => updateComboStrategy(e.target.value)}
+                  disabled={loading}
+                  className="px-2 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
+                >
+                  <option value="fallback">Fallback — try in order</option>
+                  <option value="round-robin">Round Robin — rotate</option>
+                  <option value="round-robin-affinity">Affinity — sticky per session (30m)</option>
+                  <option value="fusion">Fusion — panel + judge</option>
+                </select>
               </div>
-              <Toggle
-                checked={settings.comboStrategy === "round-robin"}
-                onChange={() => updateComboStrategy(settings.comboStrategy === "round-robin" ? "fallback" : "round-robin")}
-                disabled={loading}
-              />
             </div>
 
-            {/* Combo Sticky Round Robin Limit */}
+            {/* Combo Sticky Round Robin Limit — only plain round-robin */}
             {settings.comboStrategy === "round-robin" && (
               <div className="flex items-center justify-between pt-2 border-t border-border/50">
                 <div>
@@ -1508,9 +1528,10 @@ export default function ProfilePage() {
                 />
               </div>
             )}
-
             <p className="text-xs text-text-muted italic pt-2 border-t border-border/50">
-              {settings.fallbackStrategy === "round-robin"
+              {settings.fallbackStrategy === "round-robin-affinity"
+                ? "Affinity: same session/cache key stays on same account per model (30m TTL). Maximizes cache hits; blocked sessions auto-repin."
+                : settings.fallbackStrategy === "round-robin"
                 ? `Currently distributing requests across all available accounts with ${settings.stickyRoundRobinLimit || 3} calls per account.`
                 : "Currently using accounts in priority order (Fill First)."}
               {settings.comboStrategy === "round-robin"

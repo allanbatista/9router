@@ -145,6 +145,18 @@ function getCacheKey(detail) {
   }
   return null;
 }
+function getRawSessionId(detail) {
+  if (!detail) return null;
+  if (detail.rawSessionId) return String(detail.rawSessionId);
+  if (detail.rawSession_id) return String(detail.rawSession_id);
+  const rq = detail.request;
+  if (rq && typeof rq === "object" && !rq.redacted) {
+    if (rq.prompt_cache_key) return String(rq.prompt_cache_key);
+    if (rq.session_id) return String(rq.session_id);
+    if (rq.conversation_id) return String(rq.conversation_id);
+  }
+  return null;
+}
 function getSessionId(detail) {
   if (!detail) return null;
   if (detail.sessionId) return String(detail.sessionId);
@@ -228,9 +240,17 @@ export default function RequestDetailsTab() {
     fetchDetails();
   }, [fetchDetails]);
 
-  const handleViewDetail = (detail) => {
+  const handleViewDetail = async (detail) => {
     setSelectedDetail(detail);
     setIsDrawerOpen(true);
+    try {
+      const res = await fetch(`/api/usage/request-details/${encodeURIComponent(detail.id)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.detail) {
+        setSelectedDetail((prev) => ({ ...data.detail, cacheKey: data.detail.cacheKey ?? prev?.cacheKey, rawSessionId: data.detail.rawSessionId ?? prev?.rawSessionId, sessionId: data.detail.sessionId ?? prev?.sessionId, conversationId: data.detail.conversationId ?? prev?.conversationId }));
+      }
+    } catch {}
   };
 
   const handlePageChange = (newPage) => {
@@ -346,9 +366,8 @@ export default function RequestDetailsTab() {
                   const diff = Math.max(0, input - cached);
                   const output = detail.tokens?.completion_tokens ?? 0;
                   const cacheKey = getCacheKey(detail);
-                  const sessionId = getSessionId(detail);
-                  const conversationId = getConversationId(detail);
-                  const showSid = sessionId && sessionId !== cacheKey;
+                  const rawSessionId = getRawSessionId(detail);
+                  const showRaw = rawSessionId && rawSessionId !== cacheKey;
                   return (
                   <tr
                     key={`${detail.id}-${index}`}
@@ -372,9 +391,9 @@ export default function RequestDetailsTab() {
                         <span className="text-text-muted"> / </span>
                         <span className="text-violet-600 dark:text-violet-400">{output.toLocaleString()}</span>
                       </div>
-                      <div className="truncate font-mono text-[11px] leading-none text-text-muted max-w-[280px] mt-1 flex gap-1.5 items-center" title={`cache:${cacheKey || "-"}${showSid ? ` sid:${sessionId}` : ""}${conversationId ? ` cid:${conversationId}` : ""}`}>
-                        {cacheKey ? <span>ck:{cacheKey.length > 22 ? `${cacheKey.slice(0, 10)}…${cacheKey.slice(-6)}` : cacheKey}</span> : <span>—</span>}
-                        {showSid ? <span className="text-text-muted/60">· sid:{sessionId.length > 16 ? `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}` : sessionId}</span> : null}
+                      <div className="flex flex-col gap-0.5 mt-1 max-w-[320px]">
+                        <div className="font-mono text-[11px] leading-tight break-all text-text-muted" title={cacheKey || ""}>{cacheKey ? `ck:${cacheKey}` : "—"}</div>
+                        {showRaw ? <div className="font-mono text-[10px] leading-tight break-all text-text-muted/70" title={rawSessionId}>{rawSessionId}</div> : null}
                       </div>
                     </td>
                     <td className="p-4 text-sm text-text-muted">
@@ -433,6 +452,7 @@ export default function RequestDetailsTab() {
               <div>
                 <span className="text-text-muted">Cache Key:</span>{" "}
                 <span className="font-mono text-xs break-all text-text-main" title={getCacheKey(selectedDetail) || ""}>{getCacheKey(selectedDetail) ? (getCacheKey(selectedDetail).length > 36 ? `${getCacheKey(selectedDetail).slice(0, 18)}…${getCacheKey(selectedDetail).slice(-8)}` : getCacheKey(selectedDetail)) : "—"}</span>
+                {getRawSessionId(selectedDetail) && getRawSessionId(selectedDetail) !== getCacheKey(selectedDetail) ? <div className="font-mono text-[10px] leading-none text-text-muted/70 break-all mt-1" title={getRawSessionId(selectedDetail)}>{getRawSessionId(selectedDetail)}</div> : null}
               </div>
               <div>
                 <span className="text-text-muted">Session ID:</span>{" "}

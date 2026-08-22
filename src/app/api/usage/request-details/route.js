@@ -64,14 +64,17 @@ export async function GET(request) {
         if (!conversationId && pr.conversation_id) conversationId = String(pr.conversation_id);
       }
       const rq = d?.request;
-      if (!cacheKey && rq && typeof rq === "object" && !rq.redacted) {
-        if (rq.prompt_cache_key) cacheKey = String(rq.prompt_cache_key);
-        else if (rq.session_id) cacheKey = String(rq.session_id);
+      let rawSessionId = null;
+      if (rq && typeof rq === "object" && !rq.redacted) {
+        if (rq.prompt_cache_key) rawSessionId = String(rq.prompt_cache_key);
+        else if (rq.session_id) rawSessionId = String(rq.session_id);
+        else if (rq.conversation_id) rawSessionId = String(rq.conversation_id);
+        if (!cacheKey && rawSessionId) cacheKey = rawSessionId;
         if (!sessionId && rq.session_id) sessionId = String(rq.session_id);
         if (!conversationId && rq.conversation_id) conversationId = String(rq.conversation_id);
       }
       if (cacheKey && !sessionId) sessionId = cacheKey;
-      return { cacheKey, sessionId, conversationId };
+      return { cacheKey, sessionId, conversationId, rawSessionId };
     }
 
     // Redact conversation payloads: the stored details include full request
@@ -80,8 +83,8 @@ export async function GET(request) {
     // disabled, anyone) read every user's conversation history. Keep the
     // metadata (model, tokens, latency, status) but drop message content.
     const redactedDetails = (result.details || []).map((d) => {
-      const { cacheKey, sessionId, conversationId } = extractIds(d);
-      const redacted = { ...d, cacheKey, sessionId, conversationId };
+      const { cacheKey, sessionId, conversationId, rawSessionId } = extractIds(d);
+      const redacted = { ...d, cacheKey, sessionId, conversationId, rawSessionId };
       for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
         if (redacted[key] !== undefined) {
           redacted[key] = { redacted: true };

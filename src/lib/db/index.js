@@ -67,6 +67,14 @@ export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
 } from "./repos/requestDetailsRepo.js";
 
+// Session affinity (round-robin-affinity) + combo affinity
+export {
+  getAffinity, setAffinity, touchAffinity, pruneExpired as pruneSessionAffinity,
+  normalizeCacheKey, hashCacheKey, consistentIndex,
+} from "./repos/sessionAffinityRepo.js";
+export {
+  getComboAffinity, setComboAffinity, touchComboAffinity, pruneComboExpired as pruneComboAffinity,
+} from "./repos/comboAffinityRepo.js";
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();

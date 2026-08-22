@@ -127,7 +127,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
-      providerResponse: safeContent,
+      providerResponse: { content: safeContent, thinking: safeThinking, rawUsage: usage || null, _observed: true },
       response: { content: safeContent, thinking: safeThinking, type: "streaming" },
       pxpipe,
       status: "success"

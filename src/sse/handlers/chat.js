@@ -22,7 +22,31 @@ import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import { resolveSessionIdentity } from "open-sse/utils/sessionManager.js";
+import { normalizeCacheKey, hashCacheKey } from "@/lib/db/repos/sessionAffinityRepo.js";
 
+function deriveAffinityParams(provider, model, body, request, clientRawRequest) {
+  const rawHeaders = request?.headers ? Object.fromEntries(request.headers.entries()) : (clientRawRequest?.headers || {});
+  const lowerHeaders = {};
+  for (const [k, v] of Object.entries(rawHeaders)) lowerHeaders[k.toLowerCase()] = v;
+  // provider is scope for sessionManager — for combo use comboName as scope so same omp-* maps consistently per combo
+  const ident = resolveSessionIdentity({ headers: lowerHeaders, body, scope: provider });
+  if (!ident?.sessionId || ident.ephemeral) return { cacheKeyHash: null, rawKey: null };
+  const normalized = normalizeCacheKey(ident.sessionId, provider);
+  if (!normalized) return { cacheKeyHash: null, rawKey: null };
+  const hash = hashCacheKey(normalized);
+  return { cacheKeyHash: hash, rawKey: ident.sessionId };
+}
+function deriveComboAffinity(providerOrCombo, body, request, clientRawRequest) {
+  const rawHeaders = request?.headers ? Object.fromEntries(request.headers.entries()) : (clientRawRequest?.headers || {});
+  const lowerHeaders = {};
+  for (const [k, v] of Object.entries(rawHeaders)) lowerHeaders[k.toLowerCase()] = v;
+  const ident = resolveSessionIdentity({ headers: lowerHeaders, body, scope: providerOrCombo });
+  if (!ident?.sessionId || ident.ephemeral) return { cacheKeyHash: null, rawKey: null };
+  // combo affinity always normalized as raw (no toNumeric) — combo spans providers
+  const hash = hashCacheKey(ident.sessionId.trim());
+  return { cacheKeyHash: hash, rawKey: ident.sessionId };
+}
 /**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
@@ -117,6 +141,7 @@ export async function handleChat(request, clientRawRequest = null) {
     }
 
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+    const comboAff = comboStrategy === "round-robin-affinity" ? deriveComboAffinity(modelStr, body, request, clientRawRequest) : { cacheKeyHash: null, rawKey: null };
     log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
       body,
@@ -128,9 +153,10 @@ export async function handleChat(request, clientRawRequest = null) {
       log,
       comboName: modelStr,
       comboStrategy,
-      comboStickyLimit
+      comboStickyLimit,
+      cacheKeyHash: comboAff.cacheKeyHash,
+      rawKey: comboAff.rawKey
     });
-  }
 
   // Single model request — may still switch to a capacity-adapter model if the
   // target lacks a capability the request needs (e.g. no vision, request has an image).
@@ -225,9 +251,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
-
-    // All accounts unavailable
+    const affinity = deriveAffinityParams(provider, model, body, request, clientRawRequest);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { cacheKeyHash: affinity.cacheKeyHash, rawKey: affinity.rawKey });
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";
@@ -313,4 +338,5 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     return result.response;
   }
+}
 }

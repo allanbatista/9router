@@ -4,6 +4,7 @@ import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLock
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
+import { getAffinity, setAffinity, touchAffinity, consistentIndex } from "@/lib/db/repos/sessionAffinityRepo.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -128,47 +129,90 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     if (connection) {
       // skip strategy
+    } else if (strategy === "round-robin-affinity") {
+      const cacheKeyHash = options?.cacheKeyHash || null;
+      const rawKey = options?.rawKey || null;
+      const affinityModel = model || "__all";
+      if (cacheKeyHash) {
+        const aff = await getAffinity(providerId, affinityModel, cacheKeyHash);
+        if (aff && !excludeSet.has(aff.connectionId)) {
+          const affConn = availableConnections.find((c) => c.id === aff.connectionId);
+          if (affConn && !isModelLockActive(affConn, model)) {
+            log.info("AUTH", `${provider} | affinity hit ${providerId}/${model || "all"} ${cacheKeyHash.slice(0, 8)} → ${affConn.id.slice(0, 8)} (${affConn.email || affConn.name || "anon"})`);
+            await touchAffinity(providerId, affinityModel, cacheKeyHash);
+            connection = affConn;
+          } else if (aff) {
+            log.info("AUTH", `${provider} | affinity locked/stale ${cacheKeyHash.slice(0, 8)} ${aff.connectionId.slice(0, 8)} → repin`);
+          }
+        }
+        if (!connection) {
+          const idx = consistentIndex(cacheKeyHash, availableConnections.length);
+          let candidate = availableConnections[idx] || availableConnections[0];
+          connection = candidate;
+          await setAffinity(providerId, affinityModel, cacheKeyHash, rawKey || cacheKeyHash, connection.id);
+          log.info("AUTH", `${provider} | affinity miss ${cacheKeyHash.slice(0, 8)} → ${connection.id.slice(0, 8)} (${connection.email || connection.name || "anon"})`);
+        }
+        if (connection) {
+          await updateProviderConnection(connection.id, {
+            lastUsedAt: new Date().toISOString(),
+            consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
+          }).catch(() => {});
+        }
+      } else {
+        // No cache key (kiro ephemeral or first-turn without assistantText) → fallback to LRU like round-robin
+        const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
+        const byRecency = [...availableConnections].sort((a, b) => {
+          if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
+          if (!a.lastUsedAt) return 1;
+          if (!b.lastUsedAt) return -1;
+          return new Date(b.lastUsedAt) - new Date(a.lastUsedAt);
+        });
+        const current = byRecency[0];
+        const currentCount = current?.consecutiveUseCount || 0;
+        if (current && current.lastUsedAt && currentCount < stickyLimit) {
+          connection = current;
+          await updateProviderConnection(connection.id, { lastUsedAt: new Date().toISOString(), consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1 });
+        } else {
+          const sortedByOldest = [...availableConnections].sort((a, b) => {
+            if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
+            if (!a.lastUsedAt) return -1;
+            if (!b.lastUsedAt) return 1;
+            return new Date(a.lastUsedAt) - new Date(b.lastUsedAt);
+          });
+          connection = sortedByOldest[0];
+          await updateProviderConnection(connection.id, { lastUsedAt: new Date().toISOString(), consecutiveUseCount: 1 });
+        }
+      }
     } else if (strategy === "round-robin") {
       const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
-
-      // Sort by lastUsed (most recent first) to find current candidate
       const byRecency = [...availableConnections].sort((a, b) => {
         if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
         if (!a.lastUsedAt) return 1;
         if (!b.lastUsedAt) return -1;
         return new Date(b.lastUsedAt) - new Date(a.lastUsedAt);
       });
-
       const current = byRecency[0];
       const currentCount = current?.consecutiveUseCount || 0;
-
       if (current && current.lastUsedAt && currentCount < stickyLimit) {
-        // Stay with current account
         connection = current;
-        // Update lastUsedAt and increment count (await to ensure persistence)
         await updateProviderConnection(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
         });
       } else {
-        // Pick the least recently used (excluding current if possible)
         const sortedByOldest = [...availableConnections].sort((a, b) => {
           if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
           if (!a.lastUsedAt) return -1;
           if (!b.lastUsedAt) return 1;
           return new Date(a.lastUsedAt) - new Date(b.lastUsedAt);
         });
-
         connection = sortedByOldest[0];
-
-        // Update lastUsedAt and reset count to 1 (await to ensure persistence)
         await updateProviderConnection(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: 1
         });
       }
     } else {
-      // Default: fill-first (already sorted by priority in getProviderConnections)
       connection = availableConnections[0];
     }
 
