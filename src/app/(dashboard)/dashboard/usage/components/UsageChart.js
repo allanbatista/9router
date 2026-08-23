@@ -73,10 +73,7 @@ export default function UsageChart({ period = "7d" }) {
             <span className="w-2.5 h-2.5 rounded-sm bg-amber-500" />
             <span>Cached Input</span>
           </div>
-          <div className="flex items-center gap-1.5 font-medium text-text-muted">
-            <span className="w-2.5 h-0.5 bg-indigo-500" />
-            <span>Total Tokens</span>
-          </div>
+
           {viewMode === "all" || viewMode === "cost" ? (
             <div className="flex items-center gap-1.5 font-medium text-emerald-600 dark:text-emerald-400">
               <span className="w-2.5 h-0.5 bg-emerald-500" />
@@ -178,7 +175,7 @@ export default function UsageChart({ period = "7d" }) {
               }}
             />
 
-            {/* Stacked Bars: Uncached Input + Cached Input */}
+            {/* 1. Stacked Bars: Uncached Input + Cached Input */}
             {(viewMode === "all" || viewMode === "tokens") && (
               <Bar
                 yAxisId="tokensAxis"
@@ -187,7 +184,7 @@ export default function UsageChart({ period = "7d" }) {
                 stackId="tokensStack"
                 fill="#0ea5e9"
                 radius={[0, 0, 0, 0]}
-                maxBarSize={40}
+                maxBarSize={44}
               />
             )}
             {(viewMode === "all" || viewMode === "tokens") && (
@@ -198,26 +195,11 @@ export default function UsageChart({ period = "7d" }) {
                 stackId="tokensStack"
                 fill="#f59e0b"
                 radius={[4, 4, 0, 0]}
-                maxBarSize={40}
+                maxBarSize={44}
               />
             )}
 
-            {/* Total Token Curve (Line + Area Fill) */}
-            {(viewMode === "all" || viewMode === "tokens") && (
-              <Area
-                yAxisId="tokensAxis"
-                type="monotone"
-                dataKey="tokens"
-                name="Total Tokens"
-                stroke="#6366f1"
-                strokeWidth={2.5}
-                fill="url(#gradTotalCurve)"
-                dot={false}
-                activeDot={{ r: 5, fill: "#6366f1", stroke: "#fff", strokeWidth: 2 }}
-              />
-            )}
-
-            {/* Cost Line Curve */}
+            {/* 2. Cost Line Curve (Rendered AFTER bars so it stays in FRONT/FOREGROUND) */}
             {(viewMode === "all" || viewMode === "cost") && (
               <Line
                 yAxisId="costAxis"
@@ -225,10 +207,9 @@ export default function UsageChart({ period = "7d" }) {
                 dataKey="cost"
                 name="Cost ($)"
                 stroke="#10b981"
-                strokeWidth={2}
-                strokeDasharray={viewMode === "all" ? "4 4" : "0"}
-                dot={false}
-                activeDot={{ r: 5, fill: "#10b981", stroke: "#fff", strokeWidth: 2 }}
+                strokeWidth={3}
+                dot={{ r: 3, fill: "#10b981", stroke: "#064e3b", strokeWidth: 1.5 }}
+                activeDot={{ r: 6, fill: "#10b981", stroke: "#fff", strokeWidth: 2 }}
               />
             )}
           </ComposedChart>
