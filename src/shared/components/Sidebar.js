@@ -18,6 +18,7 @@ const VISIBLE_MEDIA_KINDS = ["embedding", "image", "video", "tts", "stt"];
 const COMBINED_WEB_ITEM = { id: "web", label: "Web Fetch & Search", icon: "travel_explore", href: "/dashboard/media-providers/web" };
 
 const navItems = [
+  { href: "/dashboard/chat", label: "Chat", icon: "forum" },
   { href: "/dashboard/usage", label: "Usage & Analytics", icon: "bar_chart" },
   { href: "/dashboard/requests", label: "Requests", icon: "receipt_long" },
   { href: "/dashboard/endpoint", label: "Endpoint & Key", icon: "api" },

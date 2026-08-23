@@ -7,7 +7,9 @@ import { ProxyPool } from "./models/ProxyPool.js";
 import { ApiKey } from "./models/ApiKey.js";
 import { Combo } from "./models/Combo.js";
 import { KvEntry } from "./models/KvEntry.js";
+import { ChatSession } from "./models/ChatSession.js";
 import { exportSettings } from "./repos/settingsRepo.js";
+
 // Settings
 export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
@@ -43,6 +45,13 @@ export {
   getCombos, getComboById, getComboByName,
   createCombo, updateCombo, deleteCombo,
 } from "./repos/combosRepo.js";
+
+// Chat sessions
+export {
+  getChatSessions, getChatSessionById,
+  createChatSession, updateChatSession, deleteChatSession,
+  exportChatSessions, importChatSessions,
+} from "./repos/chatSessionsRepo.js";
 
 // Aliases (model + custom + mitm)
 export {
@@ -81,6 +90,7 @@ export {
 export {
   getComboAffinity, setComboAffinity, touchComboAffinity, pruneComboExpired as pruneComboAffinity,
 } from "./repos/comboAffinityRepo.js";
+
 // Export/import full DB
 export async function exportDb() {
   await getConnection();
@@ -93,6 +103,7 @@ export async function exportDb() {
     keyDocs,
     comboDocs,
     kvDocs,
+    chatSessionDocs,
   ] = await Promise.all([
     exportSettings(),
     ProviderConnection.find({}).lean(),
@@ -103,6 +114,7 @@ export async function exportDb() {
     KvEntry.find({
       scope: { $in: ["modelAliases", "customModels", "mitmAlias", "pricing", "disabledModels"] },
     }).lean(),
+    ChatSession.find({}).lean(),
   ]);
 
   const out = {
@@ -160,6 +172,25 @@ export async function exportDb() {
       createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : (r.createdAt || new Date().toISOString()),
       updatedAt: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : (r.updatedAt || new Date().toISOString()),
     })),
+    chatSessions: chatSessionDocs.map((s) => ({
+      id: s._id,
+      title: s.title || "New chat",
+      modelId: s.modelId,
+      providerId: s.providerId ?? null,
+      systemPrompt: s.systemPrompt ?? null,
+      messages: Array.isArray(s.messages)
+        ? s.messages.map((m) => ({
+            id: m.id,
+            parentId: m.parentId ?? null,
+            role: m.role,
+            content: m.content,
+            attachments: Array.isArray(m.attachments) ? m.attachments : [],
+            createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : (m.createdAt || new Date().toISOString()),
+          }))
+        : [],
+      createdAt: s.createdAt instanceof Date ? s.createdAt.toISOString() : (s.createdAt || new Date().toISOString()),
+      updatedAt: s.updatedAt instanceof Date ? s.updatedAt.toISOString() : (s.updatedAt || new Date().toISOString()),
+    })),
     modelAliases: {},
     customModels: [],
     mitmAlias: {},
@@ -201,6 +232,7 @@ export async function importDb(payload) {
     KvEntry.deleteMany({
       scope: { $in: ["modelAliases", "customModels", "mitmAlias", "pricing", "disabledModels"] },
     }),
+    ChatSession.deleteMany({}),
   ]);
 
   // Settings
@@ -293,6 +325,30 @@ export async function importDb(payload) {
   }));
   if (comboDocs.length > 0) {
     await Combo.insertMany(comboDocs, { ordered: false });
+  }
+
+  // Chat sessions
+  const chatDocs = (payload.chatSessions || []).map((s) => ({
+    _id: s.id || s._id,
+    title: s.title || "New chat",
+    modelId: s.modelId,
+    providerId: s.providerId ?? null,
+    systemPrompt: s.systemPrompt ?? null,
+    messages: Array.isArray(s.messages)
+      ? s.messages.map((m) => ({
+          id: m.id,
+          parentId: m.parentId ?? null,
+          role: m.role,
+          content: m.content,
+          attachments: Array.isArray(m.attachments) ? m.attachments : [],
+          createdAt: m.createdAt ? new Date(m.createdAt) : new Date(),
+        }))
+      : [],
+    createdAt: s.createdAt ? new Date(s.createdAt) : new Date(),
+    updatedAt: s.updatedAt ? new Date(s.updatedAt) : new Date(),
+  }));
+  if (chatDocs.length > 0) {
+    await ChatSession.insertMany(chatDocs, { ordered: false });
   }
 
   // KV entries (modelAliases, customModels, mitmAlias, pricing)

@@ -26,11 +26,14 @@ import {
   ComboAffinitySchema,
   Meta,
   MetaSchema,
+  ChatSession,
+  ChatSessionSchema,
+  ChatMessageSchema,
 } from "../../src/lib/db/models/index.js";
 
 describe("Mongoose Models Suite", () => {
   describe("Exports verification", () => {
-    it("exports all 13 models and schemas", () => {
+    it("exports all 14 models and schemas", () => {
       const models = [
         Setting,
         ProviderConnection,
@@ -45,8 +48,9 @@ describe("Mongoose Models Suite", () => {
         SessionAffinity,
         ComboAffinity,
         Meta,
+        ChatSession,
       ];
-      expect(models).toHaveLength(13);
+      expect(models).toHaveLength(14);
       for (const model of models) {
         expect(model).toBeDefined();
         expect(typeof model).toBe("function");
@@ -67,11 +71,13 @@ describe("Mongoose Models Suite", () => {
         SessionAffinitySchema,
         ComboAffinitySchema,
         MetaSchema,
+        ChatSessionSchema,
       ];
-      expect(schemas).toHaveLength(13);
+      expect(schemas).toHaveLength(14);
       for (const schema of schemas) {
         expect(schema).toBeDefined();
       }
+      expect(ChatMessageSchema).toBeDefined();
     });
   });
 
@@ -144,13 +150,24 @@ describe("Mongoose Models Suite", () => {
       );
       expect(uniqueCompound).toBeDefined();
     });
+    it("configures indexes on ChatSession.{updatedAt, createdAt}", () => {
+      const indexes = ChatSessionSchema.indexes();
+      const updatedAtIndex = indexes.find(
+        ([fields]) => fields.updatedAt === -1
+      );
+      const createdAtIndex = indexes.find(
+        ([fields]) => fields.createdAt === -1
+      );
+      expect(updatedAtIndex).toBeDefined();
+      expect(createdAtIndex).toBeDefined();
+    });
   });
 
   describe("Model Instantiation and Defaults", () => {
     it("instantiates Setting with default _id 'global' and default data", () => {
       const doc = new Setting();
       expect(doc._id).toBe("global");
-      expect(doc.data).toEqual({});
+      expect(doc.data).toEqual({ agentMetadataKeys: ["os", "hostname", "agent-name"] });
       expect(doc.updatedAt).toBeInstanceOf(Date);
     });
 
@@ -294,6 +311,43 @@ describe("Mongoose Models Suite", () => {
       expect(doc.cacheKeyHash).toBe("hash456");
       expect(doc.selectedModel).toBe("anthropic/claude-3-5-sonnet");
       expect(doc.hitCount).toBe(1);
+      expect(doc.updatedAt).toBeInstanceOf(Date);
+    });
+    it("instantiates ChatSession with UUIDv4 _id, defaults, and subdocument messages", () => {
+      const doc = new ChatSession({
+        modelId: "gpt-4o",
+        providerId: "openai",
+        messages: [
+          {
+            role: "user",
+            content: "Hello world",
+            attachments: [
+              {
+                name: "image.png",
+                type: "image/png",
+                dataUrl: "data:image/png;base64,123",
+              },
+            ],
+          },
+        ],
+      });
+      expect(doc._id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      );
+      expect(doc.title).toBe("New chat");
+      expect(doc.modelId).toBe("gpt-4o");
+      expect(doc.providerId).toBe("openai");
+      expect(doc.systemPrompt).toBeNull();
+      expect(doc.messages).toHaveLength(1);
+      expect(doc.messages[0].id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      );
+      expect(doc.messages[0].parentId).toBeNull();
+      expect(doc.messages[0].role).toBe("user");
+      expect(doc.messages[0].content).toBe("Hello world");
+      expect(doc.messages[0].attachments).toHaveLength(1);
+      expect(doc.messages[0].attachments[0].name).toBe("image.png");
+      expect(doc.createdAt).toBeInstanceOf(Date);
       expect(doc.updatedAt).toBeInstanceOf(Date);
     });
   });

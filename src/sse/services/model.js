@@ -1,5 +1,5 @@
 // Re-export from open-sse with localDb integration
-import { getModelAliases, getComboByName, getProviderNodes } from "@/lib/localDb";
+import { getModelAliases, getComboByName, getComboById, getProviderNodes } from "@/lib/localDb";
 import { parseModel as parseModelCore, resolveModelAliasFromMap, getModelInfoCore } from "open-sse/services/model.js";
 import REGISTRY from "open-sse/providers/registry/index.js";
 
@@ -36,6 +36,12 @@ export async function resolveModelAlias(alias) {
  * Get full model info (parse or resolve)
  */
 export async function getModelInfo(modelStr) {
+  if (modelStr.startsWith("combo:")) {
+    const target = modelStr.slice(6);
+    const combo = (await getComboByName(target)) || (await getComboById(target));
+    return { provider: null, model: combo ? combo.name : target };
+  }
+
   const parsed = parseModel(modelStr);
 
   if (!parsed.isAlias) {
@@ -83,10 +89,18 @@ export async function getModelInfo(modelStr) {
  * @returns {Promise<string[]|null>} Array of models or null if not a combo
  */
 export async function getComboModels(modelStr) {
-  // Only check if it's not in provider/model format
+  if (modelStr.startsWith("combo:")) {
+    const target = modelStr.slice(6);
+    const combo = (await getComboByName(target)) || (await getComboById(target));
+    if (combo && combo.models && combo.models.length > 0) {
+      return combo.models;
+    }
+    return null;
+  }
+
   if (modelStr.includes("/")) return null;
 
-  const combo = await getComboByName(modelStr);
+  const combo = (await getComboByName(modelStr)) || (await getComboById(modelStr));
   if (combo && combo.models && combo.models.length > 0) {
     return combo.models;
   }

@@ -11,3 +11,4 @@ export { RequestDetail, RequestDetailSchema } from "./RequestDetail.js";
 export { SessionAffinity, SessionAffinitySchema } from "./SessionAffinity.js";
 export { ComboAffinity, ComboAffinitySchema } from "./ComboAffinity.js";
 export { Meta, MetaSchema } from "./Meta.js";
+export { ChatSession, ChatSessionSchema, ChatMessageSchema } from "./ChatSession.js";
