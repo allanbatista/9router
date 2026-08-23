@@ -529,9 +529,11 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       {/* Overview cards */}
       {loading ? spinner : <OverviewCards stats={stats} />}
 
-      {/* Provider topology + Recent Requests */}
+      {/* Unified Multi-Metric Chart: Stacked Bars (Uncached + Cached) + Line/Area Curves (Tokens & Cost) */}
+      {loading ? spinner : <UsageChart period={period} />}
+      {/* Realtime Gateway Topology & Recent Activity Stream */}
       {loading ? spinner : (
-        <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+        <div className="grid min-w-0 grid-cols-1 items-stretch gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
           <ProviderTopology
             providers={providers}
             activeRequests={stats.activeRequests || []}
@@ -542,57 +544,60 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         </div>
       )}
 
-      {/* Token / Cost chart - sync period */}
-      {loading ? spinner : <UsageChart period={period} />}
-
-      {/* Table with dropdown selector */}
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <select
-            value={tableView}
-            onChange={(e) => setTableView(e.target.value)}
-            className="w-full rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-main focus:outline-none focus:ring-2 focus:ring-primary/50 sm:w-auto"
-            style={{ colorScheme: 'auto' }}
-          >
-            {tableOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-          <div className="grid grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex">
-            <button
-              onClick={() => setViewMode("costs")}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
+      {/* Detailed Analytics Breakdown Table */}
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between p-4 rounded-xl bg-surface border border-border/80 shadow-sm">
+          <div className="flex items-center gap-3">
+            <span className="material-symbols-outlined text-[20px] text-text-muted">analytics</span>
+            <div className="flex flex-col">
+              <span className="text-sm font-semibold text-text-main">Analytics Breakdown</span>
+              <span className="text-xs text-text-muted">Group tokens and cost by model, account, key, or agent dimensions</span>
+            </div>
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={tableView}
+              onChange={(e) => setTableView(e.target.value)}
+              className="rounded-lg border border-border bg-bg px-3 py-1.5 text-xs font-semibold text-text-main focus:outline-none focus:ring-2 focus:ring-primary/40 cursor-pointer"
+              style={{ colorScheme: 'auto' }}
             >
-              Costs
-            </button>
-            <button
-              onClick={() => setViewMode("tokens")}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
-            >
-              Tokens
-            </button>
+              {tableOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <div className="flex items-center p-0.5 rounded-lg border border-border bg-bg">
+              <button
+                onClick={() => setViewMode("costs")}
+                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text-main"}`}
+              >
+                Costs ($)
+              </button>
+              <button
+                onClick={() => setViewMode("tokens")}
+                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text-main"}`}
+              >
+                Tokens
+              </button>
+            </div>
           </div>
         </div>
+
         {loading ? spinner : activeTableConfig && (
-          <>
-            <InputTokensChart
-              period={period}
-            />
-            <UsageTable
-              title=""
-              columns={activeTableConfig.columns}
-              groupedData={activeTableConfig.groupedData}
-              tableType={tableView}
-              sortBy={sortBy}
-              sortOrder={sortOrder}
-              onToggleSort={toggleSort}
-              viewMode={viewMode}
-              storageKey={activeTableConfig.storageKey}
-              renderSummaryCells={activeTableConfig.renderSummaryCells}
-              renderDetailCells={activeTableConfig.renderDetailCells}
-              emptyMessage={activeTableConfig.emptyMessage}
-            />
-          </>
+          <UsageTable
+            title=""
+            columns={activeTableConfig.columns}
+            groupedData={activeTableConfig.groupedData}
+            tableType={tableView}
+            sortBy={sortBy}
+            sortOrder={sortOrder}
+            onToggleSort={toggleSort}
+            viewMode={viewMode}
+            storageKey={activeTableConfig.storageKey}
+            renderSummaryCells={activeTableConfig.renderSummaryCells}
+            renderDetailCells={activeTableConfig.renderDetailCells}
+            emptyMessage={activeTableConfig.emptyMessage}
+          />
         )}
       </div>
     </div>
