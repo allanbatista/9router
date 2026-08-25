@@ -9,6 +9,7 @@ import Pagination from "@/shared/components/Pagination";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { cn } from "@/shared/utils/cn";
 import { getCachedTokens, getCacheCreationTokens, getPromptTokens } from "@/shared/utils/usageTokens";
+import { classifyRequest, getRequestSessionIdentity } from "@/shared/utils/requestClassification.js";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 let providerNodesCache = null;
 let providerNameCache = null;
@@ -144,60 +145,16 @@ function formatJsonPayload(value) {
 }
 
 function getCacheKey(detail) {
-  if (!detail) return null;
-  if (detail.cacheKey) return String(detail.cacheKey);
-  if (detail.cache_key) return String(detail.cache_key);
-  const pr = detail.providerRequest;
-  if (pr && typeof pr === "object" && !pr.redacted) {
-    const sid = pr?.request?.sessionId;
-    if (sid != null && String(sid).trim() !== "") return String(sid);
-    if (pr.prompt_cache_key) return String(pr.prompt_cache_key);
-    if (pr.session_id) return String(pr.session_id);
-    if (pr.conversation_id) return String(pr.conversation_id);
-    if (pr.requestId) {
-      const m = String(pr.requestId).match(/^agent\/([0-9a-f-]{36})\//i);
-      if (m) return m[1];
-    }
-  }
-  const rq = detail.request;
-  if (rq && typeof rq === "object" && !rq.redacted) {
-    if (rq.prompt_cache_key) return String(rq.prompt_cache_key);
-    if (Array.isArray(rq._agent_metadata)) {
-      const session = rq._agent_metadata.find((item) => item?.key === "session-id")?.value;
-      if (session != null && String(session).trim() !== "") return String(session);
-    }
-    if (rq.session_id) return String(rq.session_id);
-  }
-  return null;
+  return getRequestSessionIdentity(detail).cacheKey;
 }
 function getRawSessionId(detail) {
-  if (!detail) return null;
-  if (detail.rawSessionId) return String(detail.rawSessionId);
-  if (detail.rawSession_id) return String(detail.rawSession_id);
-  const rq = detail.request;
-  if (rq && typeof rq === "object" && !rq.redacted) {
-    if (rq.prompt_cache_key) return String(rq.prompt_cache_key);
-    if (rq.session_id) return String(rq.session_id);
-    if (rq.conversation_id) return String(rq.conversation_id);
-  }
-  return null;
+  return getRequestSessionIdentity(detail).rawSessionId;
 }
 function getSessionId(detail) {
-  if (!detail) return null;
-  if (detail.sessionId) return String(detail.sessionId);
-  if (detail.session_id) return String(detail.session_id);
-  return getCacheKey(detail);
+  return getRequestSessionIdentity(detail).sessionId;
 }
 function getConversationId(detail) {
-  if (!detail) return null;
-  if (detail.conversationId) return String(detail.conversationId);
-  if (detail.conversation_id) return String(detail.conversation_id);
-  const pr = detail.providerRequest;
-  if (pr && typeof pr === "object" && !pr.redacted && pr.requestId) {
-    const m = String(pr.requestId).match(/^agent\/([0-9a-f-]{36})\//i);
-    if (m) return m[1];
-  }
-  return null;
+  return getRequestSessionIdentity(detail).conversationId;
 }
 
 function CopyIconButton({ value, copyId, copied, onCopy, label }) {
@@ -323,6 +280,7 @@ export default function RequestDetailsTab() {
   const [filters, setFilters] = useState({
     provider: "",
     status: "",
+    sessionId: "",
     startDate: "",
     endDate: "",
     metadata: {},
@@ -368,6 +326,7 @@ export default function RequestDetailsTab() {
       });
       if (filters.provider) params.append("provider", filters.provider);
       if (filters.status) params.append("status", filters.status);
+      if (filters.sessionId) params.append("sessionId", filters.sessionId);
       if (filters.startDate) params.append("startDate", filters.startDate);
       if (filters.endDate) params.append("endDate", filters.endDate);
       if (filters.metadata) {
@@ -426,7 +385,7 @@ export default function RequestDetailsTab() {
 
   const handleClearFilters = () => {
     setStatusPreset("all");
-    setFilters({ provider: "", status: "", startDate: "", endDate: "", metadata: {} });
+    setFilters({ provider: "", status: "", sessionId: "", startDate: "", endDate: "", metadata: {} });
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
@@ -449,6 +408,20 @@ export default function RequestDetailsTab() {
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
+  const handleSessionFilter = (sessionId) => {
+    const value = String(sessionId || "").trim();
+    if (!value) return;
+    setFilters((prev) => ({ ...prev, sessionId: value }));
+    setPagination((prev) => ({ ...prev, page: 1 }));
+    setIsDrawerOpen(false);
+    setShowAdvancedFilters(true);
+  };
+
+  const handleSessionFilterChange = (value) => {
+    setFilters((prev) => ({ ...prev, sessionId: value }));
+    setPagination((prev) => ({ ...prev, page: 1 }));
+  };
+
   const handleMetadataFilterChange = (key, value) => {
     setFilters(prev => ({
       ...prev,
@@ -463,6 +436,7 @@ export default function RequestDetailsTab() {
   const removeFilterBadge = (type, key = null) => {
     if (type === "provider") setFilters(prev => ({ ...prev, provider: "" }));
     if (type === "status") { setStatusPreset("all"); setFilters(prev => ({ ...prev, status: "" })); }
+    if (type === "session") setFilters(prev => ({ ...prev, sessionId: "" }));
     if (type === "startDate") setFilters(prev => ({ ...prev, startDate: "" }));
     if (type === "endDate") setFilters(prev => ({ ...prev, endDate: "" }));
     if (type === "metadata" && key) {
@@ -477,6 +451,7 @@ export default function RequestDetailsTab() {
 
   const activeFiltersCount = (filters.provider ? 1 : 0) +
     (filters.status ? 1 : 0) +
+    (filters.sessionId ? 1 : 0) +
     (filters.startDate ? 1 : 0) +
     (filters.endDate ? 1 : 0) +
     Object.values(filters.metadata || {}).filter(Boolean).length;
@@ -705,6 +680,17 @@ export default function RequestDetailsTab() {
                 ))}
               </select>
             </div>
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
+              <label htmlFor="session-filter" className="text-xs font-semibold text-text-muted uppercase tracking-wider">Session ID</label>
+              <input
+                id="session-filter"
+                type="text"
+                value={filters.sessionId}
+                onChange={(e) => handleSessionFilterChange(e.target.value)}
+                placeholder="Filter all requests from one session..."
+                className="h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-xs text-text-main font-mono focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+            </div>
             {metadataKeys.map((metaKey) => (
               <div key={metaKey} className="flex flex-col gap-1.5">
                 <label htmlFor={`meta-filter-${metaKey}`} className="text-xs font-semibold text-text-muted uppercase tracking-wider capitalize">
@@ -765,6 +751,12 @@ export default function RequestDetailsTab() {
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-black/5 dark:bg-white/5 border border-border">
                 Status: <strong>{filters.status}</strong>
                 <button type="button" onClick={() => removeFilterBadge("status")} className="hover:opacity-75 ml-0.5">✕</button>
+              </span>
+            )}
+            {filters.sessionId && (
+              <span className="inline-flex max-w-full items-center gap-1 px-2.5 py-1 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 font-mono">
+                Session: <strong className="truncate">{filters.sessionId}</strong>
+                <button type="button" onClick={() => removeFilterBadge("session")} className="hover:opacity-75 ml-0.5">✕</button>
               </span>
             )}
             {Object.entries(filters.metadata || {}).map(([k, v]) => v ? (
@@ -842,6 +834,7 @@ export default function RequestDetailsTab() {
                   const agentName = meta["agent-name"] || meta.agent || null;
                   const hostname = meta.hostname || null;
                   const osName = meta.os || null;
+                  const classification = classifyRequest(detail);
 
                   return (
                     <tr
@@ -882,10 +875,25 @@ export default function RequestDetailsTab() {
                             <span className="font-mono text-[10px] text-text-muted truncate">
                               {osName || "—"} {meta.mode ? `· ${meta.mode}` : ""}
                             </span>
+                            <div className="flex items-center gap-1.5 mt-1">
+                              <Badge variant={classification.isToolCall ? "primary" : "neutral"} size="sm">
+                                {classification.requestType}
+                              </Badge>
+                              {classification.isToolCall && (
+                                <span className="text-[10px] text-text-muted">
+                                  {classification.toolCallCount} call{classification.toolCallCount === 1 ? "" : "s"}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         ) : (
                           <div className="text-xs text-text-muted font-mono">
                             <span>API Client</span>
+                            <div className="mt-1">
+                              <Badge variant={classification.isToolCall ? "primary" : "neutral"} size="sm">
+                                {classification.requestType}
+                              </Badge>
+                            </div>
                           </div>
                         )}
                       </td>
@@ -1169,6 +1177,19 @@ export default function RequestDetailsTab() {
                       <span className="font-mono text-text-main break-all">{getRawSessionId(selectedDetail) || getSessionId(selectedDetail) || "—"}</span>
                     </div>
                   </div>
+                  {(getSessionId(selectedDetail) || getRawSessionId(selectedDetail)) && (
+                    <div className="flex justify-end border-t border-border/60 pt-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        icon="filter_alt"
+                        onClick={() => handleSessionFilter(getSessionId(selectedDetail) || getRawSessionId(selectedDetail))}
+                        className="text-xs"
+                      >
+                        Filter this session
+                      </Button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Agent Metadata Box */}

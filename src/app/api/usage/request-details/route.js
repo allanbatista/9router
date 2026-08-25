@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/usageDb";
+import { classifyRequest, getRequestSessionIdentity } from "@/shared/utils/requestClassification.js";
 
 function getErrorLabel(detail) {
   let value = detail?.error ?? detail?.response?.error;
@@ -19,7 +20,7 @@ function getErrorLabel(detail) {
 
 /**
  * GET /api/usage/request-details
- * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate, agentMetadata.<key>, agentMetadata[<key>]
+ * Query parameters: page, pageSize (1-100), provider, model, connectionId, sessionId, status, startDate, endDate, agentMetadata.<key>, agentMetadata[<key>]
  */
 export async function GET(request) {
   try {
@@ -32,6 +33,7 @@ export async function GET(request) {
     const provider = searchParams.get("provider");
     const model = searchParams.get("model");
     const connectionId = searchParams.get("connectionId");
+    const sessionId = searchParams.get("sessionId");
     const status = searchParams.get("status");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
@@ -58,6 +60,7 @@ export async function GET(request) {
     if (provider) filter.provider = provider;
     if (model) filter.model = model;
     if (connectionId) filter.connectionId = connectionId;
+    if (sessionId) filter.sessionId = sessionId;
     if (status) filter.status = status;
     if (startDate) filter.startDate = startDate;
     if (endDate) filter.endDate = endDate;
@@ -82,49 +85,25 @@ export async function GET(request) {
 
     const result = await getRequestDetails(filter);
 
-    function extractIds(d) {
-      const pr = d?.providerRequest;
-      let cacheKey = null, sessionId = null, conversationId = null;
-      if (pr && typeof pr === "object" && !pr.redacted) {
-        sessionId = pr?.request?.sessionId != null ? String(pr.request.sessionId).trim() || null : (pr.sessionId ? String(pr.sessionId) : null);
-        if (pr.prompt_cache_key) cacheKey = String(pr.prompt_cache_key);
-        else if (sessionId) cacheKey = sessionId;
-        else if (pr.session_id) cacheKey = String(pr.session_id);
-        else if (pr.conversation_id) cacheKey = String(pr.conversation_id);
-        if (pr.requestId) {
-          const m = String(pr.requestId).match(/^agent\/([0-9a-f-]{36})\//i);
-          if (m) conversationId = m[1];
-          if (!cacheKey && conversationId) cacheKey = conversationId;
-        }
-        if (!conversationId && pr.conversation_id) conversationId = String(pr.conversation_id);
-      }
-      const rq = d?.request;
-      let rawSessionId = null;
-      if (rq && typeof rq === "object" && !rq.redacted) {
-        if (rq.prompt_cache_key) rawSessionId = String(rq.prompt_cache_key);
-        else if (Array.isArray(rq._agent_metadata)) {
-          const session = rq._agent_metadata.find((item) => item?.key === "session-id")?.value;
-          if (session != null && String(session).trim() !== "") rawSessionId = String(session);
-        }
-        else if (rq.session_id) rawSessionId = String(rq.session_id);
-        else if (rq.conversation_id) rawSessionId = String(rq.conversation_id);
-        if (!cacheKey && rawSessionId) cacheKey = rawSessionId;
-        if (!sessionId && rawSessionId) sessionId = rawSessionId;
-        if (!sessionId && rq.session_id) sessionId = String(rq.session_id);
-        if (!conversationId && rq.conversation_id) conversationId = String(rq.conversation_id);
-      }
-      if (cacheKey && !sessionId) sessionId = cacheKey;
-      return { cacheKey, sessionId, conversationId, rawSessionId };
-    }
-
     // Redact conversation payloads: the stored details include full request
     // bodies (user prompts, tool calls) and provider responses. Returning them
     // wholesale lets any dashboard-authenticated user (or, if requireLogin is
     // disabled, anyone) read every user's conversation history. Keep the
     // metadata (model, tokens, latency, status) but drop message content.
     const redactedDetails = (result.details || []).map((d) => {
-      const { cacheKey, sessionId, conversationId, rawSessionId } = extractIds(d);
-      const redacted = { ...d, cacheKey, sessionId, conversationId, rawSessionId, errorLabel: getErrorLabel(d) };
+      const identity = getRequestSessionIdentity(d);
+      const classification = classifyRequest(d);
+      const redacted = {
+        ...d,
+        ...identity,
+        requestType: d.requestType || classification.requestType,
+        agentRequestType: d.agentRequestType || classification.agentRequestType,
+        isToolCall: d.isToolCall ?? classification.isToolCall,
+        toolCallCount: d.toolCallCount ?? classification.toolCallCount,
+        toolCallNames: d.toolCallNames || classification.toolCallNames,
+        toolCalls: classification.toolCalls,
+        errorLabel: getErrorLabel(d),
+      };
       for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
         if (redacted[key] !== undefined) {
           redacted[key] = { redacted: true };

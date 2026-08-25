@@ -20,7 +20,7 @@ flowchart LR
 
 ## Fluxo
 
-A API valida paginação e filtros, o repositório ordena os registros pelo instante UTC equivalente e a UI apresenta os resultados em páginas. Streams são inseridos como `streaming` e finalizados como `success` (incluindo tool-calls emitidas), `aborted` (`client_closed` sem tool-call) ou `error`. Registros legados com `client_closed` e tool-call parcial são apresentados como `success` pela UI.
+A API valida paginação e filtros, incluindo `sessionId`, o repositório ordena os registros pelo instante UTC equivalente e a UI apresenta os resultados em páginas. Streams são inseridos como `streaming` e finalizados como `success` (incluindo tool-calls emitidas), `aborted` (`client_closed` sem tool-call) ou `error`. Registros legados com `client_closed` e tool-call parcial são apresentados como `success` pela UI. A classificação compartilhada diferencia `tool_call`, `agent` e `chat`.
 
 ## Fontes no código
 
@@ -30,6 +30,7 @@ A API valida paginação e filtros, o repositório ordena os registros pelo inst
 - `src/lib/db/repos/requestDetailsRepo.js`
 - `src/lib/db/models/RequestDetail.js`
 - `src/lib/db/connection.js`
+- `src/shared/utils/requestClassification.js`
 - `open-sse/handlers/chatCore/streamingHandler.js`
 - `open-sse/utils/stream.js`
 - `open-sse/utils/streamHandler.js`

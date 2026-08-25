@@ -19,6 +19,7 @@ import dynamic from "next/dynamic";
 const ProviderTopology = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/ProviderTopology"), { ssr: false });
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
 import InputTokensChart from "@/app/(dashboard)/dashboard/usage/components/InputTokensChart";
+import ToolCallMetrics from "@/app/(dashboard)/dashboard/usage/components/ToolCallMetrics";
 
 function timeAgo(timestamp) {
   const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
@@ -226,7 +227,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const [tableView, setTableView] = useState("model");
   const [viewMode, setViewMode] = useState("costs");
   const [providers, setProviders] = useState([]);
-  const [periodLocal, setPeriodLocal] = useState("today");
+  const [periodLocal, setPeriodLocal] = useState("24h");
   const [metadataKeys, setMetadataKeys] = useState(["os", "hostname", "agent-name"]);
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
@@ -600,6 +601,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           />
         )}
       </div>
+      {loading ? spinner : <ToolCallMetrics stats={stats} />}
     </div>
   );
 }

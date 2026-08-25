@@ -2,6 +2,7 @@ import { normalizeAgentMetadata } from "../../utils/agentMetadata.js";
 import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { COLORS } from "../../utils/stream.js";
 import { canonicalizeUsage } from "../../utils/usageTracking.js";
+import { classifyRequest } from "@/shared/utils/requestClassification.js";
 
 const OPTIONAL_PARAMS = [
   "temperature", "top_p", "top_k",
@@ -65,7 +66,7 @@ export function buildRequestDetail(base, overrides = {}) {
   const rawMetadata = base.agentMetadata || base.request?._agent_metadata || overrides.agentMetadata || overrides.request?._agent_metadata;
   const normalizedMetadata = normalizeAgentMetadata(rawMetadata);
 
-  return {
+  const detail = {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
     connectionId: base.connectionId || undefined,
@@ -82,6 +83,8 @@ export function buildRequestDetail(base, overrides = {}) {
     status: base.status || "success",
     ...overrides
   };
+
+  return { ...detail, ...classifyRequest(detail) };
 }
 
 // Build the "done" summary: duration, ttft, in/out tokens with cache breakdown

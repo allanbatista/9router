@@ -25,7 +25,7 @@ function UsageContent() {
   const router = useRouter();
   const [redirected, setRedirected] = useState(false);
 
-  const [period, setPeriod] = useState("today");
+  const [period, setPeriod] = useState("24h");
 
   useEffect(() => {
     const tab = searchParams.get("tab");

@@ -3,7 +3,9 @@ import { getConnection } from "../connection.js";
 import { UsageHistory } from "../models/UsageHistory.js";
 import { UsageDaily } from "../models/UsageDaily.js";
 import { Meta } from "../models/Meta.js";
+import { RequestDetail } from "../models/RequestDetail.js";
 import { getCachedTokens, getPromptTokens } from "@/shared/utils/usageTokens.js";
+import { classifyRequest } from "@/shared/utils/requestClassification.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -24,6 +26,141 @@ const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
 const CONN_CACHE_TTL_MS = 30 * 1000;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
+
+function getRequestMetricsCutoff(period) {
+  if (period === "today") {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return start;
+  }
+  if (PERIOD_MS[period]) return new Date(Date.now() - PERIOD_MS[period]);
+  return null;
+}
+
+function getToolCallTimelineConfig(period) {
+  const now = new Date();
+  if (period === "today" || period === "24h") {
+    const start = new Date(period === "today" ? now : now.getTime() - PERIOD_MS["24h"]);
+    if (period === "today") start.setHours(0, 0, 0, 0);
+    return {
+      startTime: start.getTime(),
+      bucketMs: 60 * 60 * 1000,
+      bucketCount: 24,
+      labelFn: (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    };
+  }
+
+  const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : period === "60d" ? 60 : 24;
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - (bucketCount - 1));
+  return {
+    startTime: start.getTime(),
+    bucketMs: 24 * 60 * 60 * 1000,
+    bucketCount,
+    labelFn: (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+  };
+}
+
+async function getToolCallMetrics(period) {
+  const timelineConfig = getToolCallTimelineConfig(period);
+  const metrics = {
+    toolCallRequests: 0,
+    toolCallCount: 0,
+    toolCallSuccessRequests: 0,
+    toolCallAbortedRequests: 0,
+    byToolName: {},
+    byRequestType: {},
+    byAgentRequestType: {},
+    toolCallTimeline: Array.from({ length: timelineConfig.bucketCount }, (_, index) => ({
+      label: timelineConfig.labelFn(timelineConfig.startTime + index * timelineConfig.bucketMs),
+      timestamp: timelineConfig.startTime + index * timelineConfig.bucketMs,
+      requests: 0,
+      calls: 0,
+      byToolName: {},
+    })),
+  };
+
+  try {
+    const cutoff = getRequestMetricsCutoff(period);
+    const query = cutoff ? { timestamp: { $gte: cutoff } } : {};
+    const rows = await RequestDetail.find(query)
+      .select({
+        timestamp: 1,
+        status: 1,
+        requestType: 1,
+        agentRequestType: 1,
+        isToolCall: 1,
+        toolCallCount: 1,
+        toolCallNames: 1,
+        "data.status": 1,
+        "data.requestType": 1,
+        "data.agentRequestType": 1,
+        "data.isToolCall": 1,
+        "data.toolCallCount": 1,
+        "data.toolCallNames": 1,
+        "data.response.termination": 1,
+        "data.response.metrics": 1,
+        "data.providerResponse.termination": 1,
+        "data.providerResponse.metrics": 1,
+        "data.providerRequest.requestType": 1,
+        "data.providerResponse.choices.message.tool_calls": 1,
+        "data.providerResponse.output.type": 1,
+        "data.providerResponse.output.id": 1,
+        "data.providerResponse.output.call_id": 1,
+        "data.providerResponse.output.name": 1,
+        "data.providerResponse.candidates.content.parts.functionCall": 1,
+      })
+      .lean();
+
+    for (const row of rows) {
+      const classification = classifyRequest(row);
+      const requestType = classification.requestType;
+      if (requestType) metrics.byRequestType[requestType] = (metrics.byRequestType[requestType] || 0) + 1;
+      if (classification.agentRequestType) {
+        const agentType = classification.agentRequestType;
+        metrics.byAgentRequestType[agentType] = (metrics.byAgentRequestType[agentType] || 0) + 1;
+      }
+      if (!classification.isToolCall) continue;
+
+      metrics.toolCallRequests++;
+      metrics.toolCallCount += classification.toolCallCount;
+      const namesInRequest = new Set();
+      for (const call of classification.toolCalls) {
+        const name = call.name || "unknown";
+        namesInRequest.add(name);
+        if (!metrics.byToolName[name]) metrics.byToolName[name] = { requests: 0, calls: 0 };
+        metrics.byToolName[name].calls++;
+      }
+      for (const name of namesInRequest) metrics.byToolName[name].requests++;
+
+      const timestamp = new Date(row.timestamp || row.data?.timestamp).getTime();
+      const bucketIndex = Number.isFinite(timestamp)
+        ? Math.floor((timestamp - timelineConfig.startTime) / timelineConfig.bucketMs)
+        : -1;
+      const bucket = metrics.toolCallTimeline[bucketIndex];
+      if (bucket) {
+        bucket.requests++;
+        bucket.calls += classification.toolCallCount;
+        for (const call of classification.toolCalls) {
+          const name = call.name || "unknown";
+          bucket.byToolName[name] = (bucket.byToolName[name] || 0) + 1;
+        }
+      }
+
+      const status = row.status || row.data?.status;
+      const termination = row.data?.response?.termination || row.data?.providerResponse?.termination;
+      if (status === "success" || status === "ok" || (status === "aborted" && termination === "client_closed")) {
+        metrics.toolCallSuccessRequests++;
+      }
+      if (status === "aborted") metrics.toolCallAbortedRequests++;
+    }
+  } catch (error) {
+    console.error("[usageRepo] getToolCallMetrics failed:", error.message);
+  }
+
+  return metrics;
+}
 
 // In-memory state shared across Next.js modules
 if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {} };
@@ -425,7 +562,7 @@ async function loadDaysInRange(maxDays) {
   return await UsageDaily.find({ dateKey: { $gte: cutoffKey } }).sort({ dateKey: 1 }).lean();
 }
 
-export async function getUsageStats(period = "all") {
+export async function getUsageStats(period = "24h") {
   await getConnection();
 
   const [{ getProviderConnections }, { getApiKeys }, { getProviderNodes }] = await Promise.all([
@@ -496,6 +633,12 @@ export async function getUsageStats(period = "all") {
     byApiKey: {},
     byEndpoint: {},
     byAgentMetadata: {},
+    toolCallRequests: 0,
+    toolCallCount: 0,
+    toolCallSuccessRequests: 0,
+    toolCallAbortedRequests: 0,
+    byToolName: {},
+    byRequestType: {},
     last10Minutes: [],
     pending: pendingRequests,
     activeRequests: [],
@@ -866,11 +1009,12 @@ export async function getUsageStats(period = "all") {
     }
   }
 
+  Object.assign(stats, await getToolCallMetrics(period));
   stats.totalRequests = Object.values(stats.byProvider).reduce((sum, p) => sum + (p.requests || 0), 0);
   return stats;
 }
 
-export async function getChartData(period = "7d") {
+export async function getChartData(period = "24h") {
   await getConnection();
   const now = Date.now();
 
@@ -882,7 +1026,7 @@ export async function getChartData(period = "7d") {
     const startTime = startOfDay.getTime();
     const endTime = startTime + bucketCount * bucketMs;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, inputTokens: 0, cachedTokens: 0, uncachedInputTokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, inputTokens: 0, cachedTokens: 0, uncachedInputTokens: 0, cost: 0, requests: 0 }));
 
     const rows = await UsageHistory.find({
       timestamp: { $gte: new Date(startTime) },
@@ -893,6 +1037,7 @@ export async function getChartData(period = "7d") {
       if (t < startTime || t >= endTime) continue;
       const idx = Math.floor((t - startTime) / bucketMs);
       if (idx >= 0 && idx < bucketCount) {
+        buckets[idx].requests++;
         buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
         buckets[idx].inputTokens += r.promptTokens || 0;
         buckets[idx].cachedTokens += Math.min(r.promptTokens || 0, getCachedTokens(r.tokens || {}));
@@ -908,7 +1053,7 @@ export async function getChartData(period = "7d") {
     const bucketMs = 3600000;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const startTime = now - bucketCount * bucketMs;
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, inputTokens: 0, cachedTokens: 0, uncachedInputTokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, inputTokens: 0, cachedTokens: 0, uncachedInputTokens: 0, cost: 0, requests: 0 }));
 
     const rows = await UsageHistory.find({
       timestamp: { $gte: new Date(startTime) },
@@ -918,6 +1063,7 @@ export async function getChartData(period = "7d") {
       const t = new Date(r.timestamp).getTime();
       if (t < startTime || t > now) continue;
       const idx = Math.min(Math.floor((t - startTime) / bucketMs), bucketCount - 1);
+      buckets[idx].requests++;
       buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
       buckets[idx].inputTokens += r.promptTokens || 0;
       buckets[idx].cachedTokens += Math.min(r.promptTokens || 0, getCachedTokens(r.tokens || {}));
@@ -947,6 +1093,7 @@ export async function getChartData(period = "7d") {
       cachedTokens: Math.min(dayData?.promptTokens || 0, dayData?.cachedTokens || 0),
       uncachedInputTokens: Math.max(0, (dayData?.promptTokens || 0) - Math.min(dayData?.promptTokens || 0, dayData?.cachedTokens || 0)),
       cost: dayData ? dayData.cost || 0 : 0,
+      requests: dayData?.requests || 0,
     };
   });
 }

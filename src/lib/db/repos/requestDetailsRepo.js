@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { v7 as uuidv7 } from "uuid";
 import { getConnection } from "../connection.js";
 import { RequestDetail } from "../models/RequestDetail.js";
+import { classifyRequest } from "@/shared/utils/requestClassification.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -132,7 +133,19 @@ function docToDetail(doc) {
     error: data.error ?? null,
     ...(data.pxpipe ? { pxpipe: data.pxpipe } : {}),
   };
-  return restoreErrorProviderResponse(detail);
+  const classification = classifyRequest({ ...doc, ...detail, data });
+  return restoreErrorProviderResponse({
+    ...detail,
+    requestType: doc.requestType ?? data.requestType ?? classification.requestType,
+    agentRequestType: doc.agentRequestType ?? data.agentRequestType ?? classification.agentRequestType,
+    isToolCall: doc.isToolCall ?? data.isToolCall ?? classification.isToolCall,
+    toolCallCount: doc.toolCallCount ?? data.toolCallCount ?? classification.toolCallCount,
+    toolCallNames: doc.toolCallNames ?? data.toolCallNames ?? classification.toolCallNames,
+    sessionId: doc.sessionId ?? data.sessionId ?? classification.sessionId,
+    rawSessionId: doc.rawSessionId ?? data.rawSessionId ?? classification.rawSessionId,
+    cacheKey: doc.cacheKey ?? data.cacheKey ?? classification.cacheKey,
+    conversationId: doc.conversationId ?? data.conversationId ?? classification.conversationId,
+  });
 }
 
 export async function flushToDatabase() {
@@ -162,6 +175,7 @@ export async function flushToDatabase() {
           agentMetadata = { ...rawAgentMetadata };
         }
 
+        const classification = classifyRequest(item);
         const is4xx = is4xxStatus(item.status) || is4xxStatus(item.response?.status);
         const record = {
           id,
@@ -179,6 +193,15 @@ export async function flushToDatabase() {
           response: is4xx ? (item.response ?? {}) : truncateField(item.response, config.maxJsonSize),
           error: item.error || null,
           pxpipe: item.pxpipe || undefined,
+          requestType: item.requestType || classification.requestType,
+          agentRequestType: item.agentRequestType || classification.agentRequestType,
+          isToolCall: item.isToolCall ?? classification.isToolCall,
+          toolCallCount: item.toolCallCount ?? classification.toolCallCount,
+          toolCallNames: item.toolCallNames || classification.toolCallNames,
+          sessionId: item.sessionId || classification.sessionId,
+          rawSessionId: item.rawSessionId || classification.rawSessionId,
+          cacheKey: item.cacheKey || classification.cacheKey,
+          conversationId: item.conversationId || classification.conversationId,
         };
 
         return {
@@ -189,6 +212,15 @@ export async function flushToDatabase() {
           connectionId: record.connectionId,
           status: record.status,
           agentMetadata,
+          requestType: record.requestType,
+          agentRequestType: record.agentRequestType,
+          isToolCall: record.isToolCall,
+          toolCallCount: record.toolCallCount,
+          toolCallNames: record.toolCallNames,
+          sessionId: record.sessionId,
+          rawSessionId: record.rawSessionId,
+          cacheKey: record.cacheKey,
+          conversationId: record.conversationId,
           data: record,
         };
       });
@@ -254,6 +286,27 @@ export async function getRequestDetails(filter = {}) {
   if (filter.model) query.model = filter.model;
   if (filter.connectionId) query.connectionId = filter.connectionId;
   if (filter.status) query.status = filter.status;
+  if (filter.sessionId) {
+    const sessionId = String(filter.sessionId).trim();
+    const escaped = sessionId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    query.$or = [
+      { sessionId },
+      { "data.sessionId": sessionId },
+      { "data.providerRequest.request.sessionId": sessionId },
+      { "data.providerRequest.request.session_id": sessionId },
+      { "data.providerRequest.sessionId": sessionId },
+      { "data.providerRequest.prompt_cache_key": sessionId },
+      { "data.providerRequest.session_id": sessionId },
+      { "data.providerRequest.conversation_id": sessionId },
+      { "data.request.prompt_cache_key": sessionId },
+      { "data.request.session_id": sessionId },
+      { "data.request.conversation_id": sessionId },
+      { "agentMetadata.session-id": sessionId },
+      { "data.agentMetadata.session-id": sessionId },
+      { "data.request._agent_metadata": { $elemMatch: { key: "session-id", value: sessionId } } },
+      { "data.providerRequest.requestId": { $regex: `^agent/${escaped}/` } },
+    ];
+  }
   if (filter.startDate || filter.endDate) {
     query.timestamp = {};
     if (filter.startDate) query.timestamp.$gte = new Date(filter.startDate);

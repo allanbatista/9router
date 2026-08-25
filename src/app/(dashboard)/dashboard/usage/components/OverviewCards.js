@@ -1,6 +1,7 @@
 "use client";
 
 import PropTypes from "prop-types";
+import Badge from "@/shared/components/Badge";
 import Card from "@/shared/components/Card";
 
 const fmt = (n) => new Intl.NumberFormat().format(n || 0);
@@ -21,9 +22,11 @@ export default function OverviewCards({ stats }) {
             receipt_long
           </span>
         </div>
-        <div className="mt-2">
+        <div className="mt-2 flex flex-wrap items-baseline gap-2">
           <span className="truncate text-2xl font-bold text-text-main font-mono tracking-tight">{fmt(stats.totalRequests)}</span>
+          <Badge variant="primary" size="sm">{fmt(stats.toolCallRequests)} tool-calls</Badge>
         </div>
+        <span className="mt-1 text-[10px] text-text-muted">{fmt(stats.toolCallCount)} calls · {fmt(stats.toolCallSuccessRequests)} completed</span>
       </Card>
 
       {/* Input Tokens */}

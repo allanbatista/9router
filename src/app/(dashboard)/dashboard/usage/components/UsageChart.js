@@ -22,8 +22,9 @@ const fmtTokens = (n) => {
 };
 
 const fmtCost = (n) => `$${(n || 0).toFixed(2)}`;
+const fmtRequests = (n) => Number(n || 0).toLocaleString();
 
-export default function UsageChart({ period = "7d" }) {
+export default function UsageChart({ period = "24h" }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState("all"); // "all" | "tokens" | "cost"
@@ -47,7 +48,7 @@ export default function UsageChart({ period = "7d" }) {
     fetchData();
   }, [fetchData]);
 
-  const hasData = data.some((d) => d.tokens > 0 || d.cost > 0 || d.cachedTokens > 0);
+  const hasData = data.some((d) => d.tokens > 0 || d.cost > 0 || d.cachedTokens > 0 || d.requests > 0);
 
   return (
     <Card className="flex min-w-0 flex-col gap-4 p-4 sm:p-5">
@@ -59,7 +60,7 @@ export default function UsageChart({ period = "7d" }) {
           </span>
           <div>
             <h3 className="font-semibold text-sm sm:text-base text-text-main">Token Consumption & Trends</h3>
-            <p className="text-xs text-text-muted">Stacked Input (Uncached + Cached) with Total Token Curve and Cost</p>
+            <p className="text-xs text-text-muted">Stacked Input with Token, Cost and Request trends</p>
           </div>
         </div>
 
@@ -80,6 +81,10 @@ export default function UsageChart({ period = "7d" }) {
               <span>Cost ($)</span>
             </div>
           ) : null}
+          <div className="flex items-center gap-1.5 font-medium text-violet-600 dark:text-violet-400">
+            <span className="w-2.5 h-0.5 bg-violet-500" />
+            <span>Requests</span>
+          </div>
 
           {/* View Mode Switcher */}
           <div className="flex items-center p-0.5 rounded-lg border border-border bg-bg">
@@ -160,6 +165,19 @@ export default function UsageChart({ period = "7d" }) {
               />
             )}
 
+            {/* Requests count on the secondary Y axis */}
+            <YAxis
+              yAxisId="requestsAxis"
+              orientation="right"
+              tick={{ fontSize: 11, fill: "#8b5cf6", fillOpacity: 0.85, dx: 22 }}
+              tickLine={false}
+              axisLine={false}
+              tickFormatter={fmtRequests}
+              width={68}
+              allowDecimals={false}
+              label={{ value: "Requests", angle: 90, position: "insideRight", fill: "#8b5cf6", fontSize: 10 }}
+            />
+
             <Tooltip
               contentStyle={{
                 backgroundColor: "var(--color-bg)",
@@ -171,6 +189,7 @@ export default function UsageChart({ period = "7d" }) {
               }}
               formatter={(value, name) => {
                 if (name === "Cost ($)") return [fmtCost(value), name];
+                if (name === "Requests") return [fmtRequests(value), name];
                 return [fmtTokens(value), name];
               }}
             />
@@ -212,6 +231,17 @@ export default function UsageChart({ period = "7d" }) {
                 activeDot={{ r: 6, fill: "#10b981", stroke: "#fff", strokeWidth: 2 }}
               />
             )}
+
+            <Line
+              yAxisId="requestsAxis"
+              type="monotone"
+              dataKey="requests"
+              name="Requests"
+              stroke="#8b5cf6"
+              strokeWidth={2.5}
+              dot={{ r: 2.5, fill: "#8b5cf6", stroke: "#4c1d95", strokeWidth: 1 }}
+              activeDot={{ r: 5, fill: "#8b5cf6", stroke: "#fff", strokeWidth: 2 }}
+            />
           </ComposedChart>
         </ResponsiveContainer>
       )}

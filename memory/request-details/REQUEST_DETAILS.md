@@ -9,6 +9,7 @@ Persistir metadados de requisições e fornecer consulta paginada para a observa
 - `requestDetails`: coleção MongoDB com `timestamp`, provider, model, status e payload estruturado.
 - `RequestDetailsTab`: tabela, filtros, paginação e drawer de detalhes.
 - `streamMetrics`: métricas de bytes/chunks do provider e cliente, término do upstream e tool-calls observadas.
+- `requestType`: classificação canônica (`tool_call`, `agent` ou `chat`), com `agentRequestType`, nomes/quantidade de tools e identidade de sessão.
 
 ## Relações
 
@@ -16,11 +17,13 @@ Persistir metadados de requisições e fornecer consulta paginada para a observa
 
 ## Fluxo
 
-Filtros e tamanho de página são enviados à API. O repositório calcula total, aplica `LIMIT/OFFSET` e ordena timestamps por instante, preservando o ID como desempate. A UI formata a data no fuso local em `pt-BR`, centraliza request ID/ck/session ID na primeira coluna, exibe o session raw enviado pelo cliente (incluindo `_agent_metadata.session-id`), resolve a conta priorizando o e-mail e oferece cópia dos payloads JSON no drawer.
+Filtros e tamanho de página são enviados à API. O repositório calcula total, aplica `LIMIT/OFFSET` e ordena timestamps por instante, preservando o ID como desempate. `sessionId` consulta as localizações legadas e normalizadas da sessão no MongoDB. A UI formata a data no fuso local em `pt-BR`, identifica `tool_call` na tabela, permite filtrar a sessão manualmente ou pelo drawer e oferece cópia dos payloads JSON.
 
 No streaming, o registro inicial usa status `streaming`. A finalização é idempotente: EOF normal usa `success`, chamadas de ferramenta (tool-calls) concluídas e consumidas pelo cliente são registradas como `success`, cancelamento antecipado do consumidor sem tool-calls usa `aborted` com `termination: "client_closed"`, e falha de transporte usa `error`. Tool-calls são persistidas como metadados sem argumentos, permitindo diferenciar resposta parcial recebida de ausência de bytes.
 
 O drawer mantém o header e as tabs fora do contêiner rolável; somente o corpo da tab tem scroll. `Agent & Config` é a primeira tab e apresenta o diagnóstico de lifecycle (`termination`, `reason`, bytes provider/cliente, EOF upstream e tool-calls), além de ações de cópia para diagnóstico, roteamento, conversa, metadados e payloads. Em `client_closed` com bytes dos dois lados e `upstreamEnded=false`, a causa provável é o consumidor/client fechar a conexão depois de receber uma resposta parcial; isso não é classificado como erro do provider.
+
+`UsageStats` calcula `toolCallRequests`, `toolCallCount`, sucessos/abortos, nomes de tools e tipos de request a partir de uma projeção dos campos de classificação em `requestDetails`, evitando carregar payloads de conversa completos.
 
 ## Fontes no código
 
@@ -30,6 +33,7 @@ O drawer mantém o header e as tabs fora do contêiner rolável; somente o corpo
 - `src/app/api/usage/request-details/route.js`
 - `src/app/(dashboard)/dashboard/usage/components/RequestDetailsTab.js`
 - `src/shared/components/Drawer.js`
+- `src/shared/utils/requestClassification.js`
 - `src/shared/components/Pagination.js`
 - `open-sse/utils/uuid.js`: geração de IDs UUIDv7 para detalhes criados no streaming.
 - `open-sse/handlers/chatCore/requestDetail.js`: preservação do body raw do client no campo `request`.
