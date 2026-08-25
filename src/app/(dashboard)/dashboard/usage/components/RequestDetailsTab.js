@@ -199,6 +199,107 @@ function getConversationId(detail) {
   }
   return null;
 }
+
+function CopyIconButton({ value, copyId, copied, onCopy, label }) {
+  const text = value == null ? "" : String(value);
+  if (!text || text === "—") return null;
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      icon={copied === copyId ? "check" : "content_copy"}
+      aria-label={label}
+      title={label}
+      className="h-7 w-7 px-0"
+      onClick={() => onCopy(text, copyId)}
+    />
+  );
+}
+
+function getStreamMetrics(detail) {
+  return detail?.response?.metrics || detail?.providerResponse?.metrics || {};
+}
+
+function getToolCalls(detail) {
+  const toolCalls = getStreamMetrics(detail).toolCalls;
+  return Array.isArray(toolCalls) ? toolCalls : [];
+}
+
+function isClientClosedAfterToolCall(detail) {
+  const termination = detail?.response?.termination || detail?.providerResponse?.termination;
+  return termination === "client_closed" && getToolCalls(detail).length > 0;
+}
+
+function getDisplayStatus(detail) {
+  return isClientClosedAfterToolCall(detail) ? "success" : (detail?.status || "unknown");
+}
+
+function getLifecycleSummary(detail) {
+  const response = detail?.response || {};
+  const providerResponse = detail?.providerResponse || {};
+  const metrics = getStreamMetrics(detail);
+  const termination = response.termination || providerResponse.termination || "—";
+  const reason = response.reason || providerResponse.reason || "—";
+  const providerBytes = Number(metrics.providerBytes) || 0;
+  const clientBytes = Number(metrics.clientBytes) || 0;
+  const toolCalls = getToolCalls(detail);
+
+  if (termination === "client_closed") {
+    return {
+      badgeVariant: "warning",
+      source: "client",
+      label: toolCalls.length > 0 ? "Client closed after partial tool-call" : "Client closed stream",
+      explanation: providerBytes > 0 && clientBytes > 0
+        ? "The provider sent data and 9Router forwarded it to the consumer; the stream ended before the provider reached EOF."
+        : "The consumer closed the stream before a complete response was observed; no provider HTTP error was recorded.",
+      termination,
+      reason,
+      metrics,
+    };
+  }
+
+  if (termination === "completed") {
+    return {
+      badgeVariant: "success",
+      source: "provider",
+      label: "Completed normally",
+      explanation: "The provider stream reached its normal terminal event.",
+      termination,
+      reason,
+      metrics,
+    };
+  }
+
+  if (getDisplayStatus(detail) === "error" || response.error || detail?.error) {
+    return {
+      badgeVariant: "error",
+      source: "provider/transport",
+      label: "Provider/transport error",
+      explanation: "9Router persisted an error during the provider request or stream transport.",
+      termination,
+      reason,
+      metrics,
+    };
+  }
+
+  return {
+    badgeVariant: "default",
+    source: "unknown",
+    label: "Lifecycle not recorded",
+    explanation: "This record does not contain enough lifecycle metadata to classify the termination.",
+    termination,
+    reason,
+    metrics,
+  };
+}
+
+function formatConversationForCopy(messages) {
+  return messages
+    .map(({ role, text, thinking }) => `[${role}]${thinking ? `\n[thinking]\n${thinking}` : ""}\n${text}`)
+    .join("\n\n");
+}
+
 export default function RequestDetailsTab() {
   const { copied, copy } = useCopyToClipboard();
   const [details, setDetails] = useState([]);
@@ -211,7 +312,7 @@ export default function RequestDetailsTab() {
   const [loading, setLoading] = useState(false);
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [activeDrawerTab, setActiveDrawerTab] = useState("preview"); // "preview" | "metadata" | "raw"
+  const [activeDrawerTab, setActiveDrawerTab] = useState("metadata"); // "metadata" | "preview" | "raw"
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [providers, setProviders] = useState([]);
   const [providerNameCache, setProviderNameCache] = useState(null);
@@ -297,7 +398,7 @@ export default function RequestDetailsTab() {
 
   const handleViewDetail = async (detail) => {
     setSelectedDetail(detail);
-    setActiveDrawerTab("preview");
+    setActiveDrawerTab("metadata");
     setIsDrawerOpen(true);
     try {
       const res = await fetch(`/api/usage/request-details/${encodeURIComponent(detail.id)}`);
@@ -381,6 +482,16 @@ export default function RequestDetailsTab() {
     Object.values(filters.metadata || {}).filter(Boolean).length;
 
   // Extract conversation messages for preview
+  const formatToolCall = (tc) => {
+    if (!tc) return "";
+    const name = tc.function?.name || tc.name || "tool";
+    let args = tc.function?.arguments ?? tc.args ?? tc.input;
+    if (typeof args === "object" && args !== null) {
+      try { args = JSON.stringify(args); } catch { args = String(args); }
+    }
+    return `[Tool Call: ${name}(${args || ""})]`;
+  };
+
   const extractMessages = (detail) => {
     if (!detail) return [];
     const rq = detail.request || {};
@@ -389,26 +500,105 @@ export default function RequestDetailsTab() {
     const out = [];
     if (Array.isArray(rawMsgs)) {
       for (const m of rawMsgs) {
-        const role = m.role || (m.parts ? "user" : "user");
-        let text = "";
-        if (typeof m.content === "string") text = m.content;
-        else if (Array.isArray(m.content)) {
-          text = m.content.map(c => typeof c === "string" ? c : c.text || JSON.stringify(c)).join("\n");
+        let role = m.role || (m.parts ? "user" : "user");
+        if (role === "model") role = "assistant";
+        const textParts = [];
+        let thinking = m.reasoning_content || m.reasoning || m.thinking || null;
+
+        if (typeof m.content === "string") {
+          if (m.content) textParts.push(m.content);
+        } else if (Array.isArray(m.content)) {
+          for (const c of m.content) {
+            if (typeof c === "string") {
+              if (c) textParts.push(c);
+            } else if (c && typeof c === "object") {
+              if (c.type === "text" && c.text) {
+                textParts.push(c.text);
+              } else if (c.type === "thinking" && c.thinking) {
+                thinking = (thinking ? thinking + "\n" : "") + c.thinking;
+              } else if (c.type === "tool_use") {
+                textParts.push(formatToolCall({ name: c.name, input: c.input }));
+              } else if (c.type === "tool_result") {
+                const resText = typeof c.content === "string" ? c.content : JSON.stringify(c.content ?? "");
+                textParts.push(`[Tool Result${c.tool_use_id ? ` (${c.tool_use_id})` : ""}]: ${resText}`);
+              } else if (c.type === "image_url" || c.type === "image") {
+                textParts.push("[Image]");
+              } else if (c.text) {
+                textParts.push(c.text);
+              } else {
+                try { textParts.push(JSON.stringify(c)); } catch {}
+              }
+            }
+          }
         } else if (Array.isArray(m.parts)) {
-          text = m.parts.map(p => typeof p === "string" ? p : p.text || JSON.stringify(p)).join("\n");
-        } else if (m.text) text = m.text;
-        out.push({ role, text: text || "[Empty or non-text message]" });
+          for (const p of m.parts) {
+            if (typeof p === "string") {
+              if (p) textParts.push(p);
+            } else if (p && typeof p === "object") {
+              if (p.thought === true || p.thought) {
+                thinking = (thinking ? thinking + "\n" : "") + (p.text || "");
+              } else if (p.text) {
+                textParts.push(p.text);
+              } else if (p.functionCall) {
+                textParts.push(formatToolCall({ name: p.functionCall.name, args: p.functionCall.args }));
+              } else if (p.functionResponse) {
+                const resText = typeof p.functionResponse.response === "string" ? p.functionResponse.response : JSON.stringify(p.functionResponse.response ?? "");
+                textParts.push(`[Tool Result (${p.functionResponse.name || "tool"})]: ${resText}`);
+              } else if (p.fileData || p.inlineData) {
+                textParts.push(`[Media: ${(p.fileData || p.inlineData).mimeType || "file"}]`);
+              }
+            }
+          }
+        } else if (m.text) {
+          textParts.push(m.text);
+        }
+
+        if (Array.isArray(m.tool_calls)) {
+          for (const tc of m.tool_calls) {
+            textParts.push(formatToolCall(tc));
+          }
+        }
+
+        const text = textParts.join("\n\n").trim();
+        out.push({
+          role,
+          text: text || (thinking ? "" : "[Empty message]"),
+          ...(thinking ? { thinking } : {})
+        });
       }
     }
     // Append assistant final response
     const resp = detail.response || {};
-    if (resp.content && resp.content !== "[No content]") {
-      out.push({ role: "assistant", text: resp.content, thinking: resp.thinking });
+    let finalThinking = resp.thinking || null;
+    let finalText = "";
+    if (resp.content && resp.content !== "[No content]" && resp.content !== "[Streaming in progress...]" && resp.content !== "[Tool-call response]" && resp.content !== "[No response bytes observed]" && resp.content !== "[Empty streaming response]") {
+      finalText = resp.content;
+    }
+
+    const toolCalls = resp.metrics?.toolCalls || detail.providerResponse?.metrics?.toolCalls || [];
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+      const tcText = toolCalls.map(tc => `[Tool Call: ${tc.name || "tool"}${tc.id ? ` id=${tc.id}` : ""}]`).join("\n");
+      finalText = finalText ? `${finalText}\n\n${tcText}` : tcText;
+    } else if (resp.content === "[Tool-call response]") {
+      finalText = "[Tool Call response]";
+    }
+
+    if (finalText || finalThinking) {
+      out.push({ role: "assistant", text: finalText || "", thinking: finalThinking });
     } else if (resp.error) {
       out.push({ role: "assistant", text: `[Error: ${resp.error}]`, isError: true });
     }
     return out;
   };
+
+  const selectedMessages = extractMessages(selectedDetail);
+  const lifecycle = getLifecycleSummary(selectedDetail);
+  const selectedDisplayStatus = getDisplayStatus(selectedDetail);
+  const drawerTabs = [
+    { id: "metadata", label: "Agent & Config", icon: "tune" },
+    { id: "preview", label: "Conversation Preview", icon: "forum" },
+    { id: "raw", label: "Raw Payloads", icon: "data_object" },
+  ];
 
   return (
     <div className="flex min-w-0 flex-col gap-5">
@@ -642,10 +832,12 @@ export default function RequestDetailsTab() {
                   const input = getInputTokens(detail.tokens);
                   const cached = getCachedTokens(detail.tokens);
                   const output = detail.tokens?.completion_tokens ?? 0;
-                  const isSuccess = detail.status === "success" || detail.status === "ok";
-                  const isStreaming = detail.status === "streaming";
-                  const isError = detail.status && !isSuccess && !isStreaming;
-                  const badgeVariant = isSuccess ? "success" : isError ? "error" : isStreaming ? "default" : "default";
+                  const displayStatus = getDisplayStatus(detail);
+                  const isSuccess = displayStatus === "success" || displayStatus === "ok";
+                  const isStreaming = displayStatus === "streaming";
+                  const isAborted = displayStatus === "aborted";
+                  const isError = displayStatus && !isSuccess && !isStreaming && !isAborted;
+                  const badgeVariant = isSuccess ? "success" : isError ? "error" : isAborted ? "warning" : isStreaming ? "info" : "default";
                   const meta = detail.agentMetadata || detail.data?.agentMetadata || {};
                   const agentName = meta["agent-name"] || meta.agent || null;
                   const hostname = meta.hostname || null;
@@ -662,7 +854,7 @@ export default function RequestDetailsTab() {
                         <div className="flex flex-col gap-1">
                           <div className="flex items-center gap-2">
                             <Badge variant={badgeVariant} size="sm" dot>
-                              {detail.status || "unknown"}
+                              {displayStatus}
                             </Badge>
                             <span className="text-[11px] font-mono text-text-muted">
                               {formatTimestamp(detail.timestamp)}
@@ -779,18 +971,16 @@ export default function RequestDetailsTab() {
         onClose={() => setIsDrawerOpen(false)}
         title="Request Details"
         width="half"
-      >
-        {selectedDetail && (
-          <div className="space-y-5">
-            {/* Drawer Header Badges Bar */}
-            <div className="p-3.5 rounded-xl bg-black/[0.02] dark:bg-white/[0.03] border border-black/5 dark:border-white/5 flex flex-wrap items-center justify-between gap-3 text-xs">
+        headerContent={selectedDetail && (
+          <>
+            <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-3 border-b border-black/5 px-6 py-3.5 text-xs dark:border-white/5">
               <div className="flex items-center gap-2">
                 <Badge
-                  variant={selectedDetail.status === "success" ? "success" : selectedDetail.status === "streaming" ? "default" : "error"}
+                  variant={selectedDisplayStatus === "success" || selectedDisplayStatus === "ok" ? "success" : selectedDisplayStatus === "aborted" ? "warning" : selectedDisplayStatus === "streaming" ? "info" : "error"}
                   size="sm"
                   dot
                 >
-                  {selectedDetail.status}
+                  {selectedDisplayStatus}
                 </Badge>
                 <span className="font-mono text-text-muted">{formatTimestamp(selectedDetail.timestamp)}</span>
               </div>
@@ -800,59 +990,50 @@ export default function RequestDetailsTab() {
                 <span>Tokens: <strong className="text-sky-600">{getInputTokens(selectedDetail.tokens)} in</strong> / <strong className="text-violet-600">{selectedDetail.tokens?.completion_tokens || 0} out</strong></span>
               </div>
             </div>
-
-            {/* Drawer Sub-Tabs */}
-            <div className="flex border-b border-black/10 dark:border-white/10 gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveDrawerTab("preview")}
-                className={cn(
-                  "py-2 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5",
-                  activeDrawerTab === "preview"
-                    ? "border-primary text-primary"
-                    : "border-transparent text-text-muted hover:text-text-main"
-                )}
-              >
-                <span className="material-symbols-outlined text-[16px]">forum</span>
-                Conversation Preview
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveDrawerTab("metadata")}
-                className={cn(
-                  "py-2 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5",
-                  activeDrawerTab === "metadata"
-                    ? "border-primary text-primary"
-                    : "border-transparent text-text-muted hover:text-text-main"
-                )}
-              >
-                <span className="material-symbols-outlined text-[16px]">tune</span>
-                Agent & Routing
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveDrawerTab("raw")}
-                className={cn(
-                  "py-2 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5",
-                  activeDrawerTab === "raw"
-                    ? "border-primary text-primary"
-                    : "border-transparent text-text-muted hover:text-text-main"
-                )}
-              >
-                <span className="material-symbols-outlined text-[16px]">data_object</span>
-                Raw Payloads
-              </button>
+            <div role="tablist" aria-label="Request detail tabs" className="flex flex-shrink-0 gap-2 overflow-x-auto border-b border-black/10 px-6 dark:border-white/10">
+              {drawerTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeDrawerTab === tab.id}
+                  onClick={() => setActiveDrawerTab(tab.id)}
+                  className={cn(
+                    "whitespace-nowrap border-b-2 px-3 py-2 text-xs font-semibold transition-all flex items-center gap-1.5",
+                    activeDrawerTab === tab.id
+                      ? "border-primary text-primary"
+                      : "border-transparent text-text-muted hover:text-text-main"
+                  )}
+                >
+                  <span className="material-symbols-outlined text-[16px]">{tab.icon}</span>
+                  {tab.label}
+                </button>
+              ))}
             </div>
-
+          </>
+        )}
+      >
+        {selectedDetail && (
+          <div className="space-y-5">
             {/* Tab 1: Conversation Preview */}
             {activeDrawerTab === "preview" && (
               <div className="space-y-4 animate-in fade-in duration-150">
-                {extractMessages(selectedDetail).length === 0 ? (
+                <div className="flex items-center justify-between gap-3">
+                  <h4 className="font-semibold text-text-main uppercase tracking-wider text-[11px]">Conversation Preview</h4>
+                  <CopyIconButton
+                    value={formatConversationForCopy(selectedMessages)}
+                    copyId="drawer-conversation"
+                    copied={copied}
+                    onCopy={copy}
+                    label="Copy conversation"
+                  />
+                </div>
+                {selectedMessages.length === 0 ? (
                   <div className="p-8 text-center text-text-muted text-xs font-medium">
                     No conversation messages found in payload.
                   </div>
                 ) : (
-                  extractMessages(selectedDetail).map((msg, mIdx) => {
+                  selectedMessages.map((msg, mIdx) => {
                     const isUser = msg.role === "user";
                     const isAssistant = msg.role === "assistant";
                     const isSystem = msg.role === "system" || msg.role === "developer";
@@ -893,12 +1074,83 @@ export default function RequestDetailsTab() {
             {/* Tab 2: Agent Metadata & Routing Info */}
             {activeDrawerTab === "metadata" && (
               <div className="space-y-5 animate-in fade-in duration-150 text-xs">
+                {/* Stream Diagnosis */}
+                <div className="p-4 rounded-xl bg-surface border border-border space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h4 className="font-semibold text-text-main uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-[16px] text-amber-500">monitor_heart</span>
+                        Stream Diagnosis
+                      </h4>
+                      <p className="mt-2 text-xs leading-relaxed text-text-muted">{lifecycle.explanation}</p>
+                    </div>
+                    <Badge variant={lifecycle.badgeVariant} size="sm">{lifecycle.label}</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 font-mono text-xs">
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Likely source</span>
+                      <span className="text-text-main font-semibold">{lifecycle.source}</span>
+                    </div>
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Termination</span>
+                      <span className="text-text-main font-semibold break-all">{lifecycle.termination}</span>
+                    </div>
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Reason</span>
+                      <span className="text-text-main font-semibold break-all">{lifecycle.reason}</span>
+                    </div>
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Provider / client bytes</span>
+                      <span className="text-text-main font-semibold">{Number(lifecycle.metrics.providerBytes) || 0} / {Number(lifecycle.metrics.clientBytes) || 0}</span>
+                    </div>
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Upstream EOF</span>
+                      <span className="text-text-main font-semibold">{lifecycle.metrics.upstreamEnded === true ? "yes" : "no"}</span>
+                    </div>
+                    <div>
+                      <span className="text-text-muted block text-[10px] uppercase">Tool calls</span>
+                      <span className="text-text-main font-semibold">{getToolCalls(selectedDetail).length}</span>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <CopyIconButton
+                      value={JSON.stringify({
+                        source: lifecycle.source,
+                        label: lifecycle.label,
+                        explanation: lifecycle.explanation,
+                        termination: lifecycle.termination,
+                        reason: lifecycle.reason,
+                        metrics: lifecycle.metrics,
+                      }, null, 2)}
+                      copyId="drawer-diagnosis"
+                      copied={copied}
+                      onCopy={copy}
+                      label="Copy stream diagnosis"
+                    />
+                  </div>
+                </div>
+
                 {/* Routing Box */}
                 <div className="p-4 rounded-xl bg-surface border border-border space-y-3">
-                  <h4 className="font-semibold text-text-main uppercase tracking-wider text-[11px] flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-[16px] text-primary">route</span>
-                    Routing Details
-                  </h4>
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="font-semibold text-text-main uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[16px] text-primary">route</span>
+                      Routing Details
+                    </h4>
+                    <CopyIconButton
+                      value={JSON.stringify({
+                        requestId: selectedDetail.id,
+                        provider: selectedDetail.provider,
+                        model: selectedDetail.model,
+                        connectionId: selectedDetail.connectionId,
+                        sessionId: getRawSessionId(selectedDetail) || getSessionId(selectedDetail),
+                      }, null, 2)}
+                      copyId="drawer-routing"
+                      copied={copied}
+                      onCopy={copy}
+                      label="Copy routing details"
+                    />
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <span className="text-text-muted block text-[10px] uppercase">Request ID</span>
@@ -931,7 +1183,7 @@ export default function RequestDetailsTab() {
                         variant="ghost"
                         size="sm"
                         icon={copied === "drawer-meta" ? "check" : "content_copy"}
-                        onClick={() => copy("drawer-meta", JSON.stringify(selectedDetail.agentMetadata, null, 2))}
+                        onClick={() => copy(JSON.stringify(selectedDetail.agentMetadata, null, 2), "drawer-meta")}
                         className="text-xs h-7"
                       >
                         {copied === "drawer-meta" ? "Copied!" : "Copy JSON"}

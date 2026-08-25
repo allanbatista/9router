@@ -1,4 +1,6 @@
-import { machineIdSync } from "node-machine-id";
+import * as nodeMachineIdPkg from "node-machine-id";
+const machineIdSync =
+  nodeMachineIdPkg.machineIdSync || nodeMachineIdPkg.default?.machineIdSync;
 import crypto from "node:crypto";
 
 let cachedRawId = null;

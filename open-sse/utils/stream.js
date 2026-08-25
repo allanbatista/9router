@@ -395,6 +395,20 @@ export function createSSEStream(options = {}) {
         if (translated?.length > 0) {
           for (const item of translated) {
             if (item === null || item === undefined) continue;
+            // Capture accumulated content/thinking from translated chunks if not already captured from upstream
+            if (item.choices?.[0]?.delta?.content) {
+              accumulatedContent += item.choices[0].delta.content;
+            }
+            if (item.choices?.[0]?.delta?.reasoning_content) {
+              accumulatedThinking += item.choices[0].delta.reasoning_content;
+            }
+            if (item.delta?.text) {
+              accumulatedContent += item.delta.text;
+            }
+            if (item.delta?.thinking) {
+              accumulatedThinking += item.delta.thinking;
+            }
+
             // Filter empty chunks
             if (!hasValuableContent(item, sourceFormat)) {
               continue; // Skip this empty chunk

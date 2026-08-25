@@ -1,11 +1,11 @@
 import mongoose from "mongoose";
+import { v7 as uuidv7 } from "uuid";
 
 const { Schema } = mongoose;
 
 export const RequestDetailSchema = new Schema(
   {
-    _id: { type: Schema.Types.ObjectId, auto: true },
-    timestamp: { type: Date, required: true, index: true },
+    _id: { type: String, default: uuidv7 },
     provider: { type: String, default: null, index: true },
     model: { type: String, default: null, index: true },
     connectionId: { type: String, default: null, index: true },

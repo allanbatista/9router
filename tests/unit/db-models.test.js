@@ -273,7 +273,7 @@ describe("Mongoose Models Suite", () => {
       expect(doc.byEndpoint).toEqual({});
     });
 
-    it("instantiates RequestDetail with ObjectId _id and defaults", () => {
+    it("instantiates RequestDetail with UUID _id and defaults", () => {
       const ts = new Date();
       const doc = new RequestDetail({
         timestamp: ts,
@@ -281,7 +281,9 @@ describe("Mongoose Models Suite", () => {
         model: "gpt-4o",
       });
       expect(doc._id).toBeDefined();
-      expect(String(doc._id)).toMatch(/^[0-9a-f]{24}$/);
+      expect(String(doc._id)).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      );
       expect(doc.timestamp).toEqual(ts);
       expect(doc.data).toEqual({});
     });

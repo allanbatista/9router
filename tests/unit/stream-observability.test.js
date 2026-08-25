@@ -60,7 +60,7 @@ describe("stream observability", () => {
 
     expect(mocks.saveRequestDetail).toHaveBeenCalledTimes(1);
     const detail = mocks.saveRequestDetail.mock.calls[0][0];
-    expect(detail.status).toBe("aborted");
+    expect(detail.status).toBe("success");
     expect(detail.response).toMatchObject({
       content: "[Tool-call response]",
       termination: "client_closed",

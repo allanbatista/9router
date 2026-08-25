@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { v7 as uuidv7 } from "uuid";
 import { getConnection } from "../connection.js";
 import { RequestDetail } from "../models/RequestDetail.js";
 
@@ -72,7 +73,7 @@ function sanitizeHeaders(headers) {
 export const __test__ = { sanitizeHeaders, getWriteBuffer: () => writeBuffer, clearWriteBuffer: () => { writeBuffer = []; } };
 
 function generateDetailId() {
-  return new mongoose.Types.ObjectId().toHexString();
+  return uuidv7();
 }
 
 function truncateField(obj, maxSize) {
@@ -324,9 +325,7 @@ export async function getDistinctProviders() {
 export async function getRequestDetailById(id) {
   if (!id) return null;
   await getConnection();
-  const query = mongoose.Types.ObjectId.isValid(id)
-    ? { $or: [{ _id: new mongoose.Types.ObjectId(id) }, { _id: String(id) }] }
-    : { _id: String(id) };
+  const query = { _id: String(id) };
   const doc = await RequestDetail.findOne(query).lean();
   return doc ? docToDetail(doc) : null;
 }

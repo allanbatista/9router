@@ -8,7 +8,7 @@ import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamH
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
-import mongoose from "mongoose";
+import { v7 as uuidv7 } from "uuid";
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
 const CODEX_SOURCE_TO_TARGET = {
@@ -111,7 +111,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
  * Build onStreamComplete callback for streaming usage tracking.
  */
 export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log, streamMetrics }) {
-  const streamDetailId = new mongoose.Types.ObjectId().toHexString();
+  const streamDetailId = uuidv7();
   let finalized = false;
 
   const finalize = ({ termination, contentObj = null, usage = null, ttftAt = null, reason = null, error = null } = {}) => {
@@ -130,7 +130,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
     const hasToolCall = metrics?.toolCalls?.length > 0;
     const safeContent = contentObj?.content
       || (hasToolCall ? "[Tool-call response]" : termination === "client_closed" ? "[No response bytes observed]" : "[Empty streaming response]");
-    const status = termination === "completed" ? "success" : termination === "client_closed" ? "aborted" : "error";
+    const status = (termination === "completed" || (termination === "client_closed" && hasToolCall)) ? "success" : termination === "client_closed" ? "aborted" : "error";
     const errorMessage = error ? (error.message || String(error)) : null;
     const response = {
       content: safeContent,

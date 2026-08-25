@@ -7,6 +7,7 @@ export default function Drawer({
   isOpen,
   onClose,
   title,
+  headerContent = null,
   children,
   width = "md",
   className
@@ -74,8 +75,10 @@ export default function Drawer({
           </button>
         </div>
 
+        {headerContent}
+
         {/* Body */}
-        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        <div className="min-h-0 flex-1 overflow-y-auto p-6 custom-scrollbar">
           {children}
         </div>
       </div>
