@@ -14,7 +14,7 @@ import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { handleComboChat, handleFusionChat, detectRequiredCapabilities, applyComboDefaultEffort } from "open-sse/services/combo.js";
+import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -115,7 +115,7 @@ export async function handleChat(request, clientRawRequest = null, options = {})
   const comboConfig = await getComboConfig(modelStr);
   const comboModels = comboConfig?.models?.length > 0 ? comboConfig.models : null;
   if (comboModels) {
-    const comboBody = applyComboDefaultEffort(body, comboConfig.defaultEffort);
+    const comboBody = body;
     const normalizedComboName = modelStr.startsWith("combo:") ? modelStr.slice(6) : modelStr;
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies = settings.comboStrategies || {};
@@ -145,10 +145,10 @@ export async function handleChat(request, clientRawRequest = null, options = {})
     }
 
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    const comboAff = comboStrategy === "round-robin-affinity" ? deriveComboAffinity(normalizedComboName, comboBody, request, clientRawRequest) : { cacheKeyHash: null, rawKey: null };
+    const comboAff = comboStrategy === "round-robin-affinity" ? deriveComboAffinity(normalizedComboName, body, request, clientRawRequest) : { cacheKeyHash: null, rawKey: null };
     log.info("CHAT", `Combo "${normalizedComboName}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
-      body: comboBody,
+      body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
         (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
@@ -195,7 +195,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const comboConfig = await getComboConfig(modelStr);
     const comboModels = comboConfig?.models?.length > 0 ? comboConfig.models : null;
     if (comboModels) {
-      const comboBody = applyComboDefaultEffort(body, comboConfig.defaultEffort);
+      const comboBody = body;
       const normalizedComboName = modelStr.startsWith("combo:") ? modelStr.slice(6) : modelStr;
       const chatSettings = await getSettings();
       // Check for combo-specific strategy first, fallback to global
@@ -229,7 +229,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
       log.info("CHAT", `Combo "${normalizedComboName}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
       return handleComboChat({
-        body: comboBody,
+        body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
           (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),

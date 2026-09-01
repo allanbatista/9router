@@ -6,20 +6,18 @@ Representar um grupo nomeado de modelos e suas configurações de execução no 
 
 ## Entidades
 
-- `combos`: coleção MongoDB com `name`, `kind`, `models`, `defaultEffort`, `createdAt` e `updatedAt`.
-- `defaultEffort`: campo opcional nullable; `null` ou string vazia não altera a requisição.
+- `combos`: coleção MongoDB com `name`, `kind`, `models`, `createdAt` e `updatedAt`.
+- `models`: array de modelos do combo, onde cada item pode opcionalmente definir reasoning effort via sufixo `provider/model(effort)`.
 
 ## Relações
 
-`ComboFormModal` grava pelo `/api/combos`; `combosRepo` converte documentos Mongo para o contrato da aplicação; `getComboConfig` resolve o documento completo para o roteador de chat; `applyComboDefaultEffort` protege a precedência do effort enviado pelo cliente.
+`ComboFormModal` grava pelo `/api/combos`; `combosRepo` converte documentos Mongo para o contrato da aplicação; `getComboConfig` resolve o documento completo para o roteador de chat; cada modelo no combo aplica seu effort durante a execução.
 
 ## Fluxo
 
-1. O modal inicializa `defaultEffort` vazio quando o combo não possui configuração.
-2. POST e PUT validam os níveis aceitos e convertem vazio para `null`.
-3. Exportação, importação e migração SQLite preservam o campo.
-4. A execução copia o default para `reasoning_effort` apenas quando `extractThinking` não encontra intenção explícita.
-
+1. No modal do combo, cada modelo adicionado possui um combobox para selecionar o reasoning effort desejado.
+2. O effort é serializado junto ao identificador do modelo (ex.: `openai/gpt-4o(high)`).
+3. Durante a execução, o 9Router processa o sufixo individualmente ao despachar cada tentativa para o respectivo provedor.
 ## Fontes no codigo
 
 - `src/shared/constants/combo.js`

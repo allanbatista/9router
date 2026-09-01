@@ -38,12 +38,12 @@ function loadModelCaps() {
 }
 
 // Resolve caps from a "provider/model" string or a bare model id.
-function resolveCaps(byFull, byId, key) {
-  if (!key) return null;
+function resolveCaps(byFull, byId, rawKey) {
+  if (!rawKey) return null;
+  const key = rawKey.replace(/\([^()]+\)\s*$/, "").trim();
   if (byFull[key]) return byFull[key];
   const bare = key.includes("/") ? key.slice(key.indexOf("/") + 1) : key;
   if (byId[bare]) return byId[bare];
-  const provider = key.includes("/") ? key.slice(0, key.indexOf("/")) : null;
   const c = getCapabilitiesForModel(provider, bare);
   return {
     vision: c.vision,

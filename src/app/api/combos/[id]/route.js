@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getComboById, updateCombo, deleteCombo, getComboByName } from "@/lib/localDb";
-import { normalizeComboDefaultEffort } from "@/shared/constants/combo.js";
 import { resetComboRotation } from "open-sse/services/combo.js";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
@@ -29,13 +28,6 @@ export async function PUT(request, { params }) {
     const { id } = await params;
     const body = await request.json();
 
-    if (Object.prototype.hasOwnProperty.call(body, "defaultEffort")) {
-      const defaultEffort = normalizeComboDefaultEffort(body.defaultEffort);
-      if (defaultEffort === undefined) {
-        return NextResponse.json({ error: "Invalid default effort" }, { status: 400 });
-      }
-      body.defaultEffort = defaultEffort;
-    }
     
     // Validate name format if provided
     if (body.name) {

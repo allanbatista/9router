@@ -89,7 +89,7 @@ describe("POST /api/dashboard/chat/completions", () => {
     vi.spyOn(localDb, "getProviderNodes").mockResolvedValue([]);
     vi.spyOn(localDb, "getComboByName").mockImplementation(async (name) => {
       if (name === "batista-low") {
-        return { id: "combo-batista-low", name: "batista-low", models: ["openai/gpt-4o-mini"], defaultEffort: "high" };
+        return { id: "combo-batista-low", name: "batista-low", models: ["openai/gpt-4o-mini(high)"] };
       }
       return null;
     });
@@ -122,8 +122,7 @@ describe("POST /api/dashboard/chat/completions", () => {
     expect(text).toContain("hello");
     expect(handleChatCoreSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        modelInfo: { provider: "openai", model: "gpt-4o-mini" },
-        body: expect.objectContaining({ reasoning_effort: "high" }),
+        modelInfo: { provider: "openai", model: "gpt-4o-mini(high)" },
       })
     );
   });

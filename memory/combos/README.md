@@ -21,8 +21,7 @@ flowchart LR
 
 ## Fluxo
 
-O modal envia `defaultEffort` como string ou `null`. O contrato normaliza valores vazios para `null`; durante uma requisição de chat, o valor persistido vira `reasoning_effort` somente quando não existe effort explícito no corpo recebido.
-
+Cada modelo configurado em um combo pode ter seu reasoning effort definido individualmente no modal via combobox, gerando a notação `modelo(effort)`. Durante uma requisição de chat, o modelo em execução aplica sua configuração de reasoning effort diretamente ao provedor correspondente.
 ## Fontes no codigo
 
 - `src/shared/constants/combo.js`

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
-import { normalizeComboDefaultEffort } from "@/shared/constants/combo.js";
 
 export const dynamic = "force-dynamic";
 
@@ -23,11 +22,6 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const { name, models, kind } = body;
-    const defaultEffort = normalizeComboDefaultEffort(body.defaultEffort);
-
-    if (defaultEffort === undefined) {
-      return NextResponse.json({ error: "Invalid default effort" }, { status: 400 });
-    }
 
     if (!name) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -44,7 +38,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Combo name already exists" }, { status: 400 });
     }
 
-    const combo = await createCombo({ name, models: models || [], kind: kind || null, defaultEffort });
+    const combo = await createCombo({ name, models: models || [], kind: kind || null });
 
     return NextResponse.json(combo, { status: 201 });
   } catch (error) {

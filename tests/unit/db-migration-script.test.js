@@ -371,7 +371,6 @@ describe("SQLite to MongoDB Migration CLI (V9)", () => {
     expect(mockStores.ProviderConnection.docs.get("conn-1")?.data).toEqual({ apiKey: "sk-123" });
     expect(mockStores.ApiKey.docs.get("key-1")?.key).toBe("9r-test-key");
     expect(mockStores.Combo.docs.get("combo-1")?.name).toBe("dual-fallback");
-    expect(mockStores.Combo.docs.get("combo-1")?.defaultEffort).toBe("high");
     expect(mockStores.UsageDaily.docs.get("2026-08-22")?.promptTokens).toBe(100);
     expect(Number(mockStores.Meta.docs.get("schemaVersion")?.value)).toBe(5);
   });

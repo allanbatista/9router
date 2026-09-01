@@ -5,34 +5,78 @@ import Modal from "./Modal";
 import Input from "./Input";
 import Button from "./Button";
 import ModelSelectModal from "./ModelSelectModal";
-import { COMBO_DEFAULT_EFFORT_OPTIONS } from "@/shared/constants/combo.js";
+import { COMBO_DEFAULT_EFFORT_OPTIONS, parseModelEffort, formatModelWithEffort } from "@/shared/constants/combo.js";
 
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 
-// Inline editable model item
+// Inline editable model item with Effort Selector combobox
 function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown, onRemove }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(model);
+  const { baseModel, effort } = parseModelEffort(model);
+  const [draft, setDraft] = useState(baseModel);
+
+  useEffect(() => {
+    setDraft(baseModel);
+  }, [baseModel]);
+
   const commit = () => {
     const trimmed = draft.trim();
-    if (trimmed && trimmed !== model) onEdit(trimmed);
-    else setDraft(model);
+    if (trimmed && trimmed !== baseModel) {
+      onEdit(formatModelWithEffort(trimmed, effort));
+    } else {
+      setDraft(baseModel);
+    }
     setEditing(false);
   };
+
   const handleKeyDown = (e) => {
     if (e.key === "Enter") commit();
-    if (e.key === "Escape") { setDraft(model); setEditing(false); }
+    if (e.key === "Escape") { setDraft(baseModel); setEditing(false); }
   };
+
+  const handleEffortChange = (newEffort) => {
+    onEdit(formatModelWithEffort(baseModel, newEffort));
+  };
+
   return (
     <div className="group flex min-w-0 items-center gap-1.5 rounded-md bg-black/[0.02] px-2 py-1 transition-colors hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04]">
       <span className="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{index + 1}</span>
       {editing ? (
-        <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={handleKeyDown}
-          className="min-w-0 flex-1 rounded border border-primary/40 bg-white px-1.5 py-0.5 font-mono text-xs text-text-main outline-none dark:bg-black/20" />
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={handleKeyDown}
+          className="min-w-0 flex-1 rounded border border-primary/40 bg-white px-1.5 py-0.5 font-mono text-xs text-text-main outline-none dark:bg-black/20"
+        />
       ) : (
-        <div className="min-w-0 flex-1 cursor-text truncate rounded px-1.5 py-0.5 font-mono text-xs text-text-main hover:bg-black/5 dark:hover:bg-white/5"
-          onClick={() => setEditing(true)} title="Click to edit">{model}</div>
+        <div
+          className="min-w-0 flex-1 cursor-text truncate rounded px-1.5 py-0.5 font-mono text-xs text-text-main hover:bg-black/5 dark:hover:bg-white/5"
+          onClick={() => setEditing(true)}
+          title="Click to edit model"
+        >
+          {baseModel}
+        </div>
       )}
+
+      {/* Per-model Effort selector combobox */}
+      <div className="shrink-0">
+        <select
+          value={effort || ""}
+          onChange={(e) => handleEffortChange(e.target.value)}
+          className="rounded border border-black/10 dark:border-white/10 bg-surface px-1.5 py-0.5 text-[11px] font-sans text-text-main focus:outline-none focus:ring-1 focus:ring-primary/40"
+          title="Reasoning effort override"
+        >
+          <option value="">Effort: Default</option>
+          {COMBO_DEFAULT_EFFORT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              Effort: {opt.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div className="flex shrink-0 items-center gap-0.5">
         <button onClick={onMoveUp} disabled={isFirst}
           className={`p-0.5 rounded ${isFirst ? "text-text-muted/20 cursor-not-allowed" : "text-text-muted hover:text-primary hover:bg-black/5 dark:hover:bg-white/5"}`} title="Move up">
@@ -58,7 +102,6 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
     : "";
   const [name, setName] = useState(initialName);
   const [models, setModels] = useState(combo?.models || []);
-  const [defaultEffort, setDefaultEffort] = useState(combo?.defaultEffort || "");
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -89,7 +132,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
     if (!models.includes(model.value)) setModels([...models, model.value]);
   };
   const handleDeselectModel = (model) => {
-    setModels(models.filter((m) => m !== model.value));
+    setModels(models.filter((m) => m !== model.value && parseModelEffort(m).baseModel !== model.value));
   };
   const handleRemoveModel = (i) => setModels(models.filter((_, idx) => idx !== i));
   const handleMoveUp = (i) => {
@@ -104,7 +147,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
   const handleSave = async () => {
     if (!validateName(name)) return;
     setSaving(true);
-    await onSave({ name: forcePrefix + name.trim(), models, defaultEffort: defaultEffort || null });
+    await onSave({ name: forcePrefix + name.trim(), models });
     setSaving(false);
   };
 
@@ -131,22 +174,6 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
             <p className="text-[10px] text-text-muted mt-0.5">
               {forcePrefix ? `Auto-prefixed with "${forcePrefix}". ` : ""}Only letters, numbers, -, _ and . allowed
             </p>
-          </div>
-
-          <div>
-            <label htmlFor="combo-default-effort" className="text-sm font-medium mb-1 block">Default Effort</label>
-            <select
-              id="combo-default-effort"
-              value={defaultEffort}
-              onChange={(e) => setDefaultEffort(e.target.value)}
-              className="w-full rounded-[10px] border border-transparent bg-surface-2 px-3 py-2.5 text-sm text-text-main focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-            >
-              <option value="">No override</option>
-              {COMBO_DEFAULT_EFFORT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-            <p className="text-[10px] text-text-muted mt-0.5">Optional. Applied only when the request has no explicit effort.</p>
           </div>
 
           <div>
@@ -189,7 +216,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
           onSelect={handleAddModel} onDeselect={handleDeselectModel}
           activeProviders={activeProviders} modelAliases={modelAliases}
           title="Add Model to Combo" kindFilter={kindFilter}
-          addedModelValues={models} closeOnSelect={false} />
+          addedModelValues={models.map((m) => parseModelEffort(m).baseModel)} closeOnSelect={false} />
       )}
     </>
   );

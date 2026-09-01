@@ -331,7 +331,6 @@ describe("Snapshot Export & Import Utility (V8)", () => {
             { provider: "openai", model: "gpt-4o" },
             { provider: "anthropic", model: "claude-3-5-sonnet" },
           ],
-          defaultEffort: "medium",
           createdAt: "2026-08-22T02:00:00.000Z",
           updatedAt: "2026-08-22T02:00:00.000Z",
         },
@@ -386,7 +385,6 @@ describe("Snapshot Export & Import Utility (V8)", () => {
     expect(imported.combos).toHaveLength(1);
     expect(imported.combos[0].name).toBe("gpt-and-claude-fallback");
     expect(imported.combos[0].models).toHaveLength(2);
-    expect(imported.combos[0].defaultEffort).toBe("medium");
 
     expect(imported.modelAliases).toEqual({
       "gpt-4": "gpt-4o",

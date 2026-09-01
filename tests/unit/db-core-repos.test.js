@@ -335,14 +335,12 @@ describe("Core Domain Repositories: Nodes, Proxies, Keys, Combos (V4)", () => {
           { provider: "anthropic", model: "claude-3-5-sonnet" },
           { provider: "openai", model: "gpt-4o" },
         ],
-        defaultEffort: "high",
       });
 
       expect(combo.id).toBeDefined();
       expect(combo.name).toBe("smart-coder");
       expect(combo.kind).toBe("fallback");
       expect(combo.models).toHaveLength(2);
-      expect(combo.defaultEffort).toBe("high");
 
       const byName = await getComboByName("smart-coder");
       expect(byName.id).toBe(combo.id);
@@ -352,10 +350,6 @@ describe("Core Domain Repositories: Nodes, Proxies, Keys, Combos (V4)", () => {
 
       const updated = await updateCombo(combo.id, { kind: "round-robin" });
       expect(updated.kind).toBe("round-robin");
-      expect(updated.defaultEffort).toBe("high");
-
-      const cleared = await updateCombo(combo.id, { defaultEffort: null });
-      expect(cleared.defaultEffort).toBeNull();
 
       const all = await getCombos();
       expect(all).toHaveLength(1);

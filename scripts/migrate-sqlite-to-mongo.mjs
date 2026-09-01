@@ -26,7 +26,6 @@ import { RequestDetail } from "../src/lib/db/models/RequestDetail.js";
 import { SessionAffinity } from "../src/lib/db/models/SessionAffinity.js";
 import { ComboAffinity } from "../src/lib/db/models/ComboAffinity.js";
 import { Meta } from "../src/lib/db/models/Meta.js";
-import { normalizeComboDefaultEffort } from "../src/shared/constants/combo.js";
 
 function parseJson(str, fallback = null) {
   if (typeof str !== "string" || !str.trim()) return fallback;
@@ -241,7 +240,6 @@ export async function migrateFromSqliteData(sqliteData, { dryRun = false } = {})
       name: r.name,
       kind: r.kind ?? null,
       models: parseJson(r.models, []),
-      defaultEffort: normalizeComboDefaultEffort(r.defaultEffort) ?? null,
       createdAt: r.createdAt ? new Date(r.createdAt) : new Date(),
       updatedAt: r.updatedAt ? new Date(r.updatedAt) : new Date(),
     }));

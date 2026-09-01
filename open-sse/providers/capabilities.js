@@ -328,23 +328,24 @@ export const PATTERN_CAPABILITIES = [
 export function getCapabilitiesForModel(provider, model) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
 
+  // Strip thinking suffix (e.g., "gpt-4o(high)" -> "gpt-4o")
+  const rawModel = typeof model === "string" ? model.replace(/\([^()]+\)\s*$/, "").trim() : model;
   // Canonical exact lookup strips vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7".
-  const baseModel = model.includes("/") ? model.split("/").pop() : model;
-
-  // 1. Provider-specific override
+  const baseModel = rawModel.includes("/") ? rawModel.split("/").pop() : rawModel;
+  const modelKey = rawModel;
   if (provider) {
     const providerCaps = PROVIDER_CAPABILITIES[provider];
-    if (providerCaps?.[model]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[model] };
+    if (providerCaps?.[modelKey]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[modelKey] };
     if (providerCaps?.[baseModel]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[baseModel] };
   }
 
   // 2. Canonical exact
   if (MODEL_CAPABILITIES[baseModel]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[baseModel] };
-  if (MODEL_CAPABILITIES[model]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[model] };
+  if (MODEL_CAPABILITIES[modelKey]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[modelKey] };
 
   // 3. Pattern match (first match wins)
   for (const { pattern, caps } of PATTERN_CAPABILITIES) {
-    if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
+    if (matchPattern(pattern, baseModel) || matchPattern(pattern, modelKey)) {
       return { ...DEFAULT_CAPABILITIES, ...caps };
     }
   }
