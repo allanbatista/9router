@@ -84,25 +84,24 @@ export async function getModelInfo(modelStr) {
   return getModelInfoCore(modelStr, getModelAliases);
 }
 
+function getComboLookupName(modelStr) {
+  if (typeof modelStr !== "string") return null;
+  if (modelStr.startsWith("combo:")) return modelStr.slice(6);
+  if (modelStr.includes("/")) return null;
+  return modelStr;
+}
+
+export async function getComboConfig(modelStr) {
+  const target = getComboLookupName(modelStr);
+  if (!target) return null;
+  return (await getComboByName(target)) || (await getComboById(target));
+}
+
 /**
  * Check if model is a combo and get models list
  * @returns {Promise<string[]|null>} Array of models or null if not a combo
  */
 export async function getComboModels(modelStr) {
-  if (modelStr.startsWith("combo:")) {
-    const target = modelStr.slice(6);
-    const combo = (await getComboByName(target)) || (await getComboById(target));
-    if (combo && combo.models && combo.models.length > 0) {
-      return combo.models;
-    }
-    return null;
-  }
-
-  if (modelStr.includes("/")) return null;
-
-  const combo = (await getComboByName(modelStr)) || (await getComboById(modelStr));
-  if (combo && combo.models && combo.models.length > 0) {
-    return combo.models;
-  }
-  return null;
+  const combo = await getComboConfig(modelStr);
+  return combo?.models?.length > 0 ? combo.models : null;
 }

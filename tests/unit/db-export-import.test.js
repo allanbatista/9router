@@ -7,6 +7,13 @@ import { ProxyPool } from "../../src/lib/db/models/ProxyPool.js";
 import { ApiKey } from "../../src/lib/db/models/ApiKey.js";
 import { Combo } from "../../src/lib/db/models/Combo.js";
 import { KvEntry } from "../../src/lib/db/models/KvEntry.js";
+import { ChatSession } from "../../src/lib/db/models/ChatSession.js";
+
+vi.mock("../../src/lib/db/connection.js", () => ({
+  getConnection: vi.fn().mockResolvedValue({ connection: { readyState: 1 } }),
+  disconnectDb: vi.fn().mockResolvedValue(),
+  getMongoConfig: vi.fn().mockReturnValue({ uri: "mongodb://127.0.0.1:27017/9router" }),
+}));
 
 // Mock Mongoose in-memory collection helper
 class InMemoryStore {
@@ -169,6 +176,7 @@ const mockStores = {
   ApiKey: new InMemoryStore(),
   Combo: new InMemoryStore(),
   KvEntry: new InMemoryStore(),
+  ChatSession: new InMemoryStore(),
 };
 
 describe("Snapshot Export & Import Utility (V8)", () => {
@@ -176,13 +184,6 @@ describe("Snapshot Export & Import Utility (V8)", () => {
     for (const store of Object.values(mockStores)) {
       store.clear();
     }
-
-    // Mock connection
-    vi.mock("../../src/lib/db/connection.js", () => ({
-      getConnection: vi.fn().mockResolvedValue({ connection: { readyState: 1 } }),
-      disconnectDb: vi.fn().mockResolvedValue(),
-      getMongoConfig: vi.fn().mockReturnValue({ uri: "mongodb://127.0.0.1:27017/9router" }),
-    }));
 
     // Mock models
     Setting.find = (...args) => mockStores.Setting.find(...args);
@@ -219,6 +220,12 @@ describe("Snapshot Export & Import Utility (V8)", () => {
     Combo.findOneAndUpdate = (...args) => mockStores.Combo.findOneAndUpdate(...args);
     Combo.insertMany = (...args) => mockStores.Combo.insertMany(...args);
     Combo.deleteMany = (...args) => mockStores.Combo.deleteMany(...args);
+
+    ChatSession.find = (...args) => mockStores.ChatSession.find(...args);
+    ChatSession.findById = (...args) => mockStores.ChatSession.findById(...args);
+    ChatSession.findOneAndUpdate = (...args) => mockStores.ChatSession.findOneAndUpdate(...args);
+    ChatSession.insertMany = (...args) => mockStores.ChatSession.insertMany(...args);
+    ChatSession.deleteMany = (...args) => mockStores.ChatSession.deleteMany(...args);
 
     KvEntry.find = (...args) => mockStores.KvEntry.find(...args);
     KvEntry.findById = (...args) => mockStores.KvEntry.findById(...args);
@@ -324,6 +331,7 @@ describe("Snapshot Export & Import Utility (V8)", () => {
             { provider: "openai", model: "gpt-4o" },
             { provider: "anthropic", model: "claude-3-5-sonnet" },
           ],
+          defaultEffort: "medium",
           createdAt: "2026-08-22T02:00:00.000Z",
           updatedAt: "2026-08-22T02:00:00.000Z",
         },
@@ -378,6 +386,7 @@ describe("Snapshot Export & Import Utility (V8)", () => {
     expect(imported.combos).toHaveLength(1);
     expect(imported.combos[0].name).toBe("gpt-and-claude-fallback");
     expect(imported.combos[0].models).toHaveLength(2);
+    expect(imported.combos[0].defaultEffort).toBe("medium");
 
     expect(imported.modelAliases).toEqual({
       "gpt-4": "gpt-4o",

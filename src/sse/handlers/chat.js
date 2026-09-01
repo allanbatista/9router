@@ -8,13 +8,13 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
-import { getModelInfo, getComboModels } from "../services/model.js";
+import { getModelInfo, getComboConfig } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
+import { handleComboChat, handleFusionChat, detectRequiredCapabilities, applyComboDefaultEffort } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -112,8 +112,10 @@ export async function handleChat(request, clientRawRequest = null, options = {})
   const requiredCapabilities = detectRequiredCapabilities(body);
 
   // Check if model is a combo (has multiple models with fallback)
-  const comboModels = await getComboModels(modelStr);
+  const comboConfig = await getComboConfig(modelStr);
+  const comboModels = comboConfig?.models?.length > 0 ? comboConfig.models : null;
   if (comboModels) {
+    const comboBody = applyComboDefaultEffort(body, comboConfig.defaultEffort);
     const normalizedComboName = modelStr.startsWith("combo:") ? modelStr.slice(6) : modelStr;
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies = settings.comboStrategies || {};
@@ -125,7 +127,7 @@ export async function handleChat(request, clientRawRequest = null, options = {})
     if (comboStrategy === "fusion") {
       log.info("CHAT", `Combo "${normalizedComboName}" with ${comboModels.length} models (strategy: fusion)`);
       return handleFusionChat({
-        body,
+        body: comboBody,
         models: comboModels,
         handleSingleModel: (b, m, isPanel) => {
           let cleanRawReq = clientRawRequest;
@@ -143,10 +145,10 @@ export async function handleChat(request, clientRawRequest = null, options = {})
     }
 
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    const comboAff = comboStrategy === "round-robin-affinity" ? deriveComboAffinity(normalizedComboName, body, request, clientRawRequest) : { cacheKeyHash: null, rawKey: null };
+    const comboAff = comboStrategy === "round-robin-affinity" ? deriveComboAffinity(normalizedComboName, comboBody, request, clientRawRequest) : { cacheKeyHash: null, rawKey: null };
     log.info("CHAT", `Combo "${normalizedComboName}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
-      body,
+      body: comboBody,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
         (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
@@ -190,8 +192,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
-    const comboModels = await getComboModels(modelStr);
+    const comboConfig = await getComboConfig(modelStr);
+    const comboModels = comboConfig?.models?.length > 0 ? comboConfig.models : null;
     if (comboModels) {
+      const comboBody = applyComboDefaultEffort(body, comboConfig.defaultEffort);
       const normalizedComboName = modelStr.startsWith("combo:") ? modelStr.slice(6) : modelStr;
       const chatSettings = await getSettings();
       // Check for combo-specific strategy first, fallback to global
@@ -205,7 +209,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       if (comboStrategy === "fusion") {
         log.info("CHAT", `Combo "${normalizedComboName}" with ${comboModels.length} models (strategy: fusion)`);
         return handleFusionChat({
-          body,
+          body: comboBody,
           models: comboModels,
           handleSingleModel: (b, m, isPanel) => {
             let cleanRawReq = clientRawRequest;
@@ -225,7 +229,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
       log.info("CHAT", `Combo "${normalizedComboName}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
       return handleComboChat({
-        body,
+        body: comboBody,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
           (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),

@@ -9,6 +9,7 @@ import { Combo } from "./models/Combo.js";
 import { KvEntry } from "./models/KvEntry.js";
 import { ChatSession } from "./models/ChatSession.js";
 import { exportSettings } from "./repos/settingsRepo.js";
+import { normalizeComboDefaultEffort } from "../../shared/constants/combo.js";
 
 // Settings
 export {
@@ -169,6 +170,7 @@ export async function exportDb() {
       name: r.name,
       kind: r.kind,
       models: Array.isArray(r.models) ? r.models : [],
+      defaultEffort: normalizeComboDefaultEffort(r.defaultEffort) ?? null,
       createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : (r.createdAt || new Date().toISOString()),
       updatedAt: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : (r.updatedAt || new Date().toISOString()),
     })),
@@ -320,6 +322,7 @@ export async function importDb(payload) {
     name: c.name,
     kind: c.kind ?? null,
     models: Array.isArray(c.models) ? c.models : [],
+    defaultEffort: normalizeComboDefaultEffort(c.defaultEffort) ?? null,
     createdAt: c.createdAt ? new Date(c.createdAt) : new Date(),
     updatedAt: c.updatedAt ? new Date(c.updatedAt) : new Date(),
   }));

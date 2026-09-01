@@ -6,6 +6,7 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { extractThinking } from "../translator/concerns/thinkingUnified.js";
 import { getComboAffinity, setComboAffinity, touchComboAffinity } from "@/lib/db/repos/comboAffinityRepo.js";
 import { consistentIndex } from "@/lib/db/repos/sessionAffinityRepo.js";
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
@@ -182,6 +183,13 @@ export function detectRequiredCapabilities(body) {
   // search: temporarily disabled in auto-switch (feature not wired yet).
 
   return required;
+}
+
+export function applyComboDefaultEffort(body, defaultEffort) {
+  if (!body || typeof body !== "object") return body;
+  const normalized = typeof defaultEffort === "string" ? defaultEffort.trim().toLowerCase() : "";
+  if (!normalized || extractThinking(body)) return body;
+  return { ...body, reasoning_effort: normalized };
 }
 
 function normalizeStickyLimit(stickyLimit) {

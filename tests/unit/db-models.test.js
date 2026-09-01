@@ -223,6 +223,7 @@ describe("Mongoose Models Suite", () => {
       );
       expect(doc.name).toBe("smart-fallback");
       expect(doc.models).toEqual([]);
+      expect(doc.defaultEffort).toBeNull();
       expect(doc.createdAt).toBeInstanceOf(Date);
       expect(doc.updatedAt).toBeInstanceOf(Date);
     });

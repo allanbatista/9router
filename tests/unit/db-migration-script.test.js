@@ -23,6 +23,13 @@ import { RequestDetail } from "../../src/lib/db/models/RequestDetail.js";
 import { SessionAffinity } from "../../src/lib/db/models/SessionAffinity.js";
 import { ComboAffinity } from "../../src/lib/db/models/ComboAffinity.js";
 import { Meta } from "../../src/lib/db/models/Meta.js";
+import { ChatSession } from "../../src/lib/db/models/ChatSession.js";
+
+vi.mock("../../src/lib/db/connection.js", () => ({
+  getConnection: vi.fn().mockResolvedValue({ connection: { readyState: 1 } }),
+  disconnectDb: vi.fn().mockResolvedValue(),
+  getMongoConfig: vi.fn().mockReturnValue({ uri: "mongodb://127.0.0.1:27017/9router" }),
+}));
 
 // Mock collections store
 class MockDbStore {
@@ -174,6 +181,7 @@ const mockStores = {
   SessionAffinity: new MockDbStore(),
   ComboAffinity: new MockDbStore(),
   Meta: new MockDbStore(),
+  ChatSession: new MockDbStore(),
 };
 
 describe("SQLite to MongoDB Migration CLI (V9)", () => {
@@ -189,13 +197,6 @@ describe("SQLite to MongoDB Migration CLI (V9)", () => {
     for (const store of Object.values(mockStores)) {
       store.clear();
     }
-
-    // Mock connection
-    vi.mock("../../src/lib/db/connection.js", () => ({
-      getConnection: vi.fn().mockResolvedValue({ connection: { readyState: 1 } }),
-      disconnectDb: vi.fn().mockResolvedValue(),
-      getMongoConfig: vi.fn().mockReturnValue({ uri: "mongodb://127.0.0.1:27017/9router" }),
-    }));
 
     // Bind mocks to models
     Setting.find = (...args) => mockStores.Setting.find(...args);
@@ -246,6 +247,11 @@ describe("SQLite to MongoDB Migration CLI (V9)", () => {
     SessionAffinity.findOneAndUpdate = (...args) => mockStores.SessionAffinity.findOneAndUpdate(...args);
     ComboAffinity.findOneAndUpdate = (...args) => mockStores.ComboAffinity.findOneAndUpdate(...args);
     Meta.findOneAndUpdate = (...args) => mockStores.Meta.findOneAndUpdate(...args);
+    ChatSession.find = (...args) => mockStores.ChatSession.find(...args);
+    ChatSession.findById = (...args) => mockStores.ChatSession.findById(...args);
+    ChatSession.findOneAndUpdate = (...args) => mockStores.ChatSession.findOneAndUpdate(...args);
+    ChatSession.insertMany = (...args) => mockStores.ChatSession.insertMany(...args);
+    ChatSession.deleteMany = (...args) => mockStores.ChatSession.deleteMany(...args);
   });
   afterEach(() => {
     if (fs.existsSync(tempDir)) {
@@ -312,8 +318,8 @@ describe("SQLite to MongoDB Migration CLI (V9)", () => {
       CREATE TABLE apiKeys (id TEXT PRIMARY KEY, key TEXT, name TEXT, machineId TEXT, isActive INTEGER, createdAt TEXT);
       INSERT INTO apiKeys VALUES ('key-1', '9r-test-key', 'Test Key', 'mach-1', 1, '2026-08-20T00:00:00.000Z');
 
-      CREATE TABLE combos (id TEXT PRIMARY KEY, name TEXT, kind TEXT, models TEXT, createdAt TEXT, updatedAt TEXT);
-      INSERT INTO combos VALUES ('combo-1', 'dual-fallback', 'fallback', '[{"provider":"openai","model":"gpt-4o"}]', '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
+      CREATE TABLE combos (id TEXT PRIMARY KEY, name TEXT, kind TEXT, models TEXT, defaultEffort TEXT, createdAt TEXT, updatedAt TEXT);
+      INSERT INTO combos VALUES ('combo-1', 'dual-fallback', 'fallback', '[{"provider":"openai","model":"gpt-4o"}]', 'high', '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
 
       CREATE TABLE kv (scope TEXT, key TEXT, value TEXT, PRIMARY KEY (scope, key));
       INSERT INTO kv VALUES ('modelAliases', 'alias-1', '"model-target"');
@@ -365,6 +371,7 @@ describe("SQLite to MongoDB Migration CLI (V9)", () => {
     expect(mockStores.ProviderConnection.docs.get("conn-1")?.data).toEqual({ apiKey: "sk-123" });
     expect(mockStores.ApiKey.docs.get("key-1")?.key).toBe("9r-test-key");
     expect(mockStores.Combo.docs.get("combo-1")?.name).toBe("dual-fallback");
+    expect(mockStores.Combo.docs.get("combo-1")?.defaultEffort).toBe("high");
     expect(mockStores.UsageDaily.docs.get("2026-08-22")?.promptTokens).toBe(100);
     expect(Number(mockStores.Meta.docs.get("schemaVersion")?.value)).toBe(5);
   });

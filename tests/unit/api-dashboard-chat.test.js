@@ -36,7 +36,7 @@ describe("POST /api/dashboard/chat/completions", () => {
       provider: null,
       model: "test-model-400",
     });
-    vi.spyOn(modelService, "getComboModels").mockResolvedValue(null);
+    vi.spyOn(modelService, "getComboConfig").mockResolvedValue(null);
 
     const req = new Request("http://localhost/api/dashboard/chat/completions", {
       method: "POST",
@@ -89,7 +89,7 @@ describe("POST /api/dashboard/chat/completions", () => {
     vi.spyOn(localDb, "getProviderNodes").mockResolvedValue([]);
     vi.spyOn(localDb, "getComboByName").mockImplementation(async (name) => {
       if (name === "batista-low") {
-        return { id: "combo-batista-low", name: "batista-low", models: ["openai/gpt-4o-mini"] };
+        return { id: "combo-batista-low", name: "batista-low", models: ["openai/gpt-4o-mini"], defaultEffort: "high" };
       }
       return null;
     });
@@ -123,6 +123,7 @@ describe("POST /api/dashboard/chat/completions", () => {
     expect(handleChatCoreSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         modelInfo: { provider: "openai", model: "gpt-4o-mini" },
+        body: expect.objectContaining({ reasoning_effort: "high" }),
       })
     );
   });
@@ -141,7 +142,7 @@ describe("src/sse/handlers/chat.js isDashboardSession bypass", () => {
       provider: null,
       model: "invalid-test-model",
     });
-    vi.spyOn(modelService, "getComboModels").mockResolvedValue(null);
+    vi.spyOn(modelService, "getComboConfig").mockResolvedValue(null);
 
     // 1. Without isDashboardSession: true, requireApiKey should block request with 401 Unauthorized
     const unauthedReq = new Request("http://localhost/api/v1/chat/completions", {

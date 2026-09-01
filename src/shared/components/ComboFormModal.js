@@ -5,6 +5,7 @@ import Modal from "./Modal";
 import Input from "./Input";
 import Button from "./Button";
 import ModelSelectModal from "./ModelSelectModal";
+import { COMBO_DEFAULT_EFFORT_OPTIONS } from "@/shared/constants/combo.js";
 
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 
@@ -57,6 +58,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
     : "";
   const [name, setName] = useState(initialName);
   const [models, setModels] = useState(combo?.models || []);
+  const [defaultEffort, setDefaultEffort] = useState(combo?.defaultEffort || "");
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -102,7 +104,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
   const handleSave = async () => {
     if (!validateName(name)) return;
     setSaving(true);
-    await onSave({ name: forcePrefix + name.trim(), models });
+    await onSave({ name: forcePrefix + name.trim(), models, defaultEffort: defaultEffort || null });
     setSaving(false);
   };
 
@@ -129,6 +131,22 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
             <p className="text-[10px] text-text-muted mt-0.5">
               {forcePrefix ? `Auto-prefixed with "${forcePrefix}". ` : ""}Only letters, numbers, -, _ and . allowed
             </p>
+          </div>
+
+          <div>
+            <label htmlFor="combo-default-effort" className="text-sm font-medium mb-1 block">Default Effort</label>
+            <select
+              id="combo-default-effort"
+              value={defaultEffort}
+              onChange={(e) => setDefaultEffort(e.target.value)}
+              className="w-full rounded-[10px] border border-transparent bg-surface-2 px-3 py-2.5 text-sm text-text-main focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            >
+              <option value="">No override</option>
+              {COMBO_DEFAULT_EFFORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-text-muted mt-0.5">Optional. Applied only when the request has no explicit effort.</p>
           </div>
 
           <div>

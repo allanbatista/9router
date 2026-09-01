@@ -9,6 +9,7 @@ export const ComboSchema = new Schema(
     name: { type: String, required: true, unique: true },
     kind: { type: String, default: null },
     models: { type: [Schema.Types.Mixed], default: () => [] },
+    defaultEffort: { type: String, default: null },
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
   },
