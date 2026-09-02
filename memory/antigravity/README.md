@@ -2,11 +2,12 @@
 
 ## Responsabilidade
 
-Formatar e enviar requisições Gemini Cloud Code para o upstream Antigravity, preservando chamadas de ferramenta e removendo partes de pensamento que não podem ser reenviadas.
+Registrar, exibir e enviar modelos Gemini Cloud Code para o upstream Antigravity, preservando chamadas de ferramenta e removendo partes de pensamento que não podem ser reenviadas.
 
 ## Entidades
 
 - [Antigravity executor](./EXECUTOR.md): transformação final, autenticação e envio da requisição.
+- [Catálogo e dashboard](./MODELS_AND_UI.md): modelos expostos e resolução de capacidades na UI.
 
 ## Relações
 
@@ -14,6 +15,8 @@ Formatar e enviar requisições Gemini Cloud Code para o upstream Antigravity, p
 flowchart LR
   TRANSLATOR[openaiToAntigravityRequest] --> EXECUTOR[AntigravityExecutor]
   EXECUTOR --> UPSTREAM[Google Cloud Code]
+  REGISTRY[Antigravity registry] --> DASHBOARD[Provider dashboard]
+  REGISTRY --> EXECUTOR
   TESTS[bugs-antigravity.test.js] --> EXECUTOR
 ```
 

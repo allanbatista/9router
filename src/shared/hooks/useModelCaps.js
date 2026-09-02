@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { resolveCaps } from "../utils/modelCaps.js";
 
 // Module cache: one /api/models fetch shared by every useModelCaps instance.
 let cache = null; // { byFull, byId } | null
@@ -35,23 +35,6 @@ function loadModelCaps() {
     })
     .finally(() => { inflight = null; });
   return inflight;
-}
-
-// Resolve caps from a "provider/model" string or a bare model id.
-function resolveCaps(byFull, byId, rawKey) {
-  if (!rawKey) return null;
-  const key = rawKey.replace(/\([^()]+\)\s*$/, "").trim();
-  if (byFull[key]) return byFull[key];
-  const bare = key.includes("/") ? key.slice(key.indexOf("/") + 1) : key;
-  if (byId[bare]) return byId[bare];
-  const c = getCapabilitiesForModel(provider, bare);
-  return {
-    vision: c.vision,
-    search: c.search,
-    reasoning: c.reasoning,
-    contextWindow: c.contextWindow,
-    maxOutput: c.maxOutput,
-  };
 }
 
 export function useModelCaps() {
