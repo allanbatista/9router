@@ -1,14 +1,29 @@
 "use client";
 
+import { VIRTUAL_MODEL_FAMILIES } from "open-sse/services/modelFallback.js";
+
 import { createElement as h, useState, useRef, useEffect, useMemo } from "react";
 import PropTypes from "prop-types";
 import Badge from "@/shared/components/Badge";
 
 /**
- * Filter models/combos by query
+ * Filter models/combos/virtuals by query
  */
 export function filterModelsAndCombos(providerGroups = [], combos = [], query = "") {
   const q = (query || "").toLowerCase().trim();
+
+  const virtualList = Object.keys(VIRTUAL_MODEL_FAMILIES).map((id) => ({
+    id,
+    name: id,
+    requestModel: id,
+    providerId: "virtual",
+    isVirtual: true,
+  }));
+
+  const filteredVirtuals = virtualList.filter((m) => {
+    if (!q) return true;
+    return m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q);
+  });
 
   const filteredProviders = providerGroups
     .map((group) => {
@@ -36,11 +51,11 @@ export function filterModelsAndCombos(providerGroups = [], combos = [], query = 
   });
 
   return {
+    virtuals: filteredVirtuals,
     providers: filteredProviders,
     combos: filteredCombos,
   };
 }
-
 export default function ModelSelectorDropdown({
   selectedModel = "",
   selectedProvider = "",
@@ -91,10 +106,9 @@ export default function ModelSelectorDropdown({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const { providers: filteredProviders, combos: filteredCombos } = useMemo(() => {
+  const { virtuals: filteredVirtuals, providers: filteredProviders, combos: filteredCombos } = useMemo(() => {
     return filterModelsAndCombos(providerGroups, combos, searchQuery);
   }, [providerGroups, combos, searchQuery]);
-
   // Find active item display label
   const currentSelectionLabel = useMemo(() => {
     if (selectedModel?.startsWith("combo:")) {
@@ -104,6 +118,15 @@ export default function ModelSelectorDropdown({
         title: found?.name || comboId,
         subtitle: "Combo Inteligente",
         isCombo: true,
+      };
+    }
+
+    if (VIRTUAL_MODEL_FAMILIES[selectedModel]) {
+      return {
+        title: selectedModel,
+        subtitle: "Virtual Fallback (1h Cache)",
+        isCombo: false,
+        isVirtual: true,
       };
     }
 
@@ -118,7 +141,6 @@ export default function ModelSelectorDropdown({
         }
       }
     }
-
     if (selectedModel) {
       return {
         title: selectedModel,
@@ -146,6 +168,7 @@ export default function ModelSelectorDropdown({
 
   const totalOptionsCount =
     filteredCombos.length +
+    filteredVirtuals.length +
     filteredProviders.reduce((acc, g) => acc + g.models.length, 0);
 
   return h(
@@ -316,6 +339,78 @@ export default function ModelSelectorDropdown({
                               {
                                 className:
                                   "material-symbols-outlined text-[18px] text-brand-500 shrink-0",
+                              },
+                              "check"
+                            )
+                        );
+                      })
+                    )
+                  ),
+                // Virtual Auto Fallback Models Section
+                filteredVirtuals.length > 0 &&
+                  h(
+                    "div",
+                    null,
+                    h(
+                      "div",
+                      {
+                        className:
+                          "flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-amber-500",
+                      },
+                      h(
+                        "span",
+                        { className: "material-symbols-outlined text-[14px]" },
+                        "auto_mode"
+                      ),
+                      "Virtual Auto Fallback (1h Cache)"
+                    ),
+                    h(
+                      "div",
+                      { className: "space-y-1 mt-1" },
+                      filteredVirtuals.map((vm) => {
+                        const isSelected = selectedModel === vm.id;
+
+                        return h(
+                          "button",
+                          {
+                            key: vm.id,
+                            type: "button",
+                            onClick: () => handleSelect(vm, false),
+                            className: `w-full flex items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition-colors ${
+                              isSelected
+                                ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium"
+                                : "text-text-main hover:bg-surface-2"
+                            }`,
+                            role: "option",
+                            "aria-selected": isSelected,
+                          },
+                          h(
+                            "div",
+                            { className: "flex flex-col" },
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "font-semibold text-xs text-text-main flex items-center gap-1.5",
+                              },
+                              vm.name,
+                              h(Badge, { variant: "warning", size: "sm" }, "Auto Fallback")
+                            ),
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "text-[11px] text-text-subtle truncate max-w-[240px]",
+                              },
+                              "Degrada automaticamente para versão anterior se indisponível"
+                            )
+                          ),
+                          isSelected &&
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "material-symbols-outlined text-[18px] text-amber-500 shrink-0",
                               },
                               "check"
                             )

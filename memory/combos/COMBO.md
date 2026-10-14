@@ -11,13 +11,14 @@ Representar um grupo nomeado de modelos e suas configurações de execução no 
 
 ## Relações
 
-`ComboFormModal` grava pelo `/api/combos`; `combosRepo` converte documentos Mongo para o contrato da aplicação; `getComboConfig` resolve o documento completo para o roteador de chat; cada modelo no combo aplica seu effort durante a execução.
+`ComboFormModal` grava pelo `/api/combos`; `combosRepo` converte documentos Mongo para o contrato da aplicação; `getComboConfig` resolve o documento completo para o roteador de chat; cada modelo no combo aplica seu effort durante a execução. Em `round-robin-affinity`, uma falha tardia do stream move a afinidade da sessão para o próximo modelo sem repetir automaticamente uma resposta parcial.
 
 ## Fluxo
 
 1. No modal do combo, cada modelo adicionado possui um combobox para selecionar o reasoning effort desejado.
 2. O effort é serializado junto ao identificador do modelo (ex.: `openai/gpt-4o(high)`).
 3. Durante a execução, o 9Router processa o sufixo individualmente ao despachar cada tentativa para o respectivo provedor.
+4. Se um stream já aceito falhar por timeout, a conta recebe cooldown e a próxima requisição da mesma afinidade começa pelo modelo seguinte.
 ## Fontes no codigo
 
 - `src/shared/constants/combo.js`

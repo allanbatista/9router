@@ -3,7 +3,7 @@ import { needsTranslation } from "../../translator/index.js";
 import { createSSETransformStreamWithLogger, createPassthroughStreamWithLogger, snapshotStreamMetrics } from "../../utils/stream.js";
 import { pipeWithDisconnect } from "../../utils/streamHandler.js";
 import { PROVIDERS } from "../../config/providers.js";
-import { STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig.js";
+import { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamHelpers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { saveRequestDetail } from "@/lib/usageDb.js";
@@ -43,15 +43,7 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, onStreamError, streamDetailId, pxpipe, reqTag, log, streamMetrics }) {
-  if (onRequestSuccess) {
-    Promise.resolve()
-      .then(onRequestSuccess)
-      .catch(err => {
-        console.error("[ChatCore] onRequestSuccess failed:", err?.message || err);
-      });
-  }
-
+export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, onStreamError, streamDetailId, pxpipe, reqTag, log, streamMetrics }) {
   // When upstream returns HTML/text instead of SSE (e.g. Cloudflare 5xx error
   // page), piping it through the SSE transform stream causes Next.js
   // "failed to pipe response" and crashes the chat router. Read the body,
@@ -85,7 +77,8 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   const isResponsesPassthrough = sourceFormat === FORMATS.OPENAI_RESPONSES && targetFormat === FORMATS.OPENAI_RESPONSES;
   const onAbortTerminal = isResponsesPassthrough ? buildAbortedResponsesTerminalBytes : null;
   const stallTimeoutMs = PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS;
-  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs, streamMetrics);
+  const firstChunkTimeoutMs = PROVIDERS[provider]?.firstChunkTimeoutMs || STREAM_FIRST_CHUNK_TIMEOUT_MS;
+  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs, streamMetrics, firstChunkTimeoutMs);
 
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
@@ -110,7 +103,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 /**
  * Build onStreamComplete callback for streaming usage tracking.
  */
-export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log, streamMetrics }) {
+export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log, streamMetrics, onRequestSuccess, onStreamFailure }) {
   const streamDetailId = uuidv7();
   let finalized = false;
 
@@ -167,7 +160,14 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
 
     // Persiste o uso mesmo quando o cliente fecha após receber uma chamada de ferramenta parcial.
     saveUsageStats({ provider, model, tokens: effectiveUsage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "STREAM USAGE", silent: true });
-    if (termination === "completed" && log?.line) log.line(reqTag, "📊", formatDoneLine({ usage: effectiveUsage, latency }));
+    if (status === "success") {
+      invokeLifecycleCallback(onRequestSuccess, undefined, "onRequestSuccess");
+    }
+    if (termination === "completed" && log?.line) {
+      log.line(reqTag, "📊", formatDoneLine({ usage: effectiveUsage, latency }));
+    } else if (termination === "error") {
+      invokeLifecycleCallback(onStreamFailure, error, "onStreamFailure");
+    }
   };
 
   const onStreamComplete = (contentObj, usage, ttftAt) => finalize({
@@ -180,4 +180,13 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
   const onStreamError = (error) => finalize({ termination: "error", error });
 
   return { onStreamComplete, onStreamDisconnect, onStreamError, streamDetailId };
+}
+
+function invokeLifecycleCallback(callback, value, label) {
+  if (!callback) return;
+  Promise.resolve()
+    .then(() => callback(value))
+    .catch((error) => {
+      console.error(`[ChatCore] ${label} failed:`, error?.message || error);
+    });
 }

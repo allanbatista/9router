@@ -16,6 +16,7 @@ import * as modelService from "../../src/sse/services/model.js";
 import * as authService from "../../src/sse/services/auth.js";
 import * as tokenRefresh from "../../src/sse/services/tokenRefresh.js";
 import * as chatCore from "open-sse/handlers/chatCore.js";
+import { STREAM_TIMEOUT_ERROR_CODES } from "../../open-sse/config/runtimeConfig.js";
 describe("POST /api/dashboard/chat/completions", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -124,6 +125,56 @@ describe("POST /api/dashboard/chat/completions", () => {
       expect.objectContaining({
         modelInfo: { provider: "openai", model: "gpt-4o-mini(high)" },
       })
+    );
+  });
+
+  it("forwards client cancellation and quarantines an account after stream timeout", async () => {
+    vi.spyOn(localDb, "getSettings").mockResolvedValue({ requireApiKey: false });
+    vi.spyOn(modelService, "getComboConfig").mockResolvedValue(null);
+    vi.spyOn(modelService, "getModelInfo").mockResolvedValue({
+      provider: "antigravity",
+      model: "gemini-3.8-flash-high(high)",
+    });
+    vi.spyOn(authService, "getProviderCredentials").mockResolvedValue({
+      accessToken: "test-token",
+      connectionId: "connection-1",
+      connectionName: "test-account",
+      projectId: "test-project",
+    });
+    vi.spyOn(tokenRefresh, "checkAndRefreshToken").mockImplementation(async (_provider, credentials) => credentials);
+    const markUnavailable = vi.spyOn(authService, "markAccountUnavailable").mockResolvedValue({
+      shouldFallback: true,
+      cooldownMs: 30000,
+    });
+    let coreOptions;
+    vi.spyOn(chatCore, "handleChatCore").mockImplementation(async (options) => {
+      coreOptions = options;
+      return { success: true, response: new Response("ok") };
+    });
+    const request = new Request("http://localhost/api/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "ag/gemini-3.8-flash-high(high)",
+        messages: [{ role: "user", content: "Hello" }],
+        stream: true,
+      }),
+    });
+
+    const response = await handleChat(request);
+    expect(response.status).toBe(200);
+    expect(coreOptions.clientSignal).toBe(request.signal);
+
+    const timeout = Object.assign(new Error("stream stall timeout"), {
+      code: STREAM_TIMEOUT_ERROR_CODES.STALL,
+    });
+    await coreOptions.onStreamFailure(timeout);
+    expect(markUnavailable).toHaveBeenCalledWith(
+      "connection-1",
+      504,
+      "stream stall timeout",
+      "antigravity",
+      "gemini-3.8-flash-high(high)",
     );
   });
 });

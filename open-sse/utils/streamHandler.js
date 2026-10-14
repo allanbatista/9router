@@ -1,10 +1,46 @@
 // Stream handler with disconnect detection - shared for all providers
-import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import {
+  STREAM_FIRST_CHUNK_TIMEOUT_MS,
+  STREAM_STALL_TIMEOUT_MS,
+  STREAM_TIMEOUT_ERROR_CODES,
+} from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
 // Get HH:MM:SS timestamp
 function getTimeString() {
   return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function normalizeDisconnectReason(reason) {
+  if (typeof reason === "string" && reason.trim()) return reason;
+  if (reason instanceof Error && reason.message) return reason.message;
+  return "client_closed";
+}
+
+function bindClientAbort(signal, onAbort) {
+  if (!signal) return () => {};
+  if (signal.aborted) {
+    onAbort();
+    return () => {};
+  }
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
+}
+
+function createStreamTimeoutError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = 504;
+  return error;
+}
+
+function invokeControllerCallback(callback, value, label) {
+  if (!callback) return;
+  try {
+    callback(value);
+  } catch (error) {
+    console.error(`[STREAM] ${label} callback failed:`, error?.message || error);
+  }
 }
 
 /**
@@ -14,12 +50,14 @@ function getTimeString() {
  * @param {object} options.log - Logger instance
  * @param {string} options.provider - Provider name
  * @param {string} options.model - Model name
+ * @param {AbortSignal} options.clientSignal - Incoming HTTP cancellation signal
  */
-export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "" } = {}) {
+export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "", clientSignal = null } = {}) {
   const abortController = new AbortController();
   const startTime = Date.now();
+  const cleanupHandlers = new Set();
   let disconnected = false;
-  let abortTimeout = null;
+  let removeClientAbortListener = () => {};
 
   // Only abnormal terminations are logged; normal completion is covered by "📊 done".
   // isError uses errorLine (always shown, ignores LOG_LEVEL) so failures survive quiet levels.
@@ -30,7 +68,18 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     else console.log(`[${getTimeString()}] ${symbol} ${provider}/${model} · ${status} · ${duration}ms`);
   };
 
-  return {
+  const cleanup = () => {
+    removeClientAbortListener();
+    removeClientAbortListener = () => {};
+    for (const handler of cleanupHandlers) handler();
+    cleanupHandlers.clear();
+  };
+
+  const abortUpstream = () => {
+    if (!abortController.signal.aborted) abortController.abort();
+  };
+
+  const controller = {
     signal: abortController.signal,
     startTime,
 
@@ -40,51 +89,59 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     handleDisconnect: (reason = "client_closed") => {
       if (disconnected) return;
       disconnected = true;
+      const normalizedReason = normalizeDisconnectReason(reason);
+      cleanup();
 
-      logStream("⚡", `DISCONNECT: ${reason}`);
-      dbg("CTRL", `${provider}/${model} | disconnect=${reason} | dur=${Date.now() - startTime}ms`);
+      logStream("⚡", `DISCONNECT: ${normalizedReason}`);
+      dbg("CTRL", `${provider}/${model} | disconnect=${normalizedReason} | dur=${Date.now() - startTime}ms`);
 
-      // Delay abort to allow cleanup
-      abortTimeout = setTimeout(() => {
-        abortController.abort();
-      }, 500);
-
-      onDisconnect?.({ reason, duration: Date.now() - startTime });
+      invokeControllerCallback(onDisconnect, { reason: normalizedReason, duration: Date.now() - startTime }, "onDisconnect");
+      abortUpstream();
     },
 
     // Call when stream completes normally (no line here — "📊 done" is authoritative)
     handleComplete: () => {
       if (disconnected) return;
       disconnected = true;
-
-      if (abortTimeout) {
-        clearTimeout(abortTimeout);
-        abortTimeout = null;
-      }
+      cleanup();
     },
 
     // Call on error
     handleError: (error) => {
       if (disconnected) return;
       disconnected = true;
-
-      if (abortTimeout) {
-        clearTimeout(abortTimeout);
-        abortTimeout = null;
-      }
+      cleanup();
 
       if (error.name === "AbortError") {
         logStream("⚡", "ABORTED");
-        onError?.(error);
+        invokeControllerCallback(onError, error, "onError");
+        abortUpstream();
         return;
       }
 
       logStream("✗", `ERROR: ${error.message}${error.stack ? `\n    ${error.stack}` : ""}`, true);
-      onError?.(error);
+      invokeControllerCallback(onError, error, "onError");
+      abortUpstream();
     },
 
-    abort: () => abortController.abort()
+    abort: abortUpstream,
+
+    addCleanup(handler) {
+      if (typeof handler !== "function") return () => {};
+      if (disconnected) {
+        handler();
+        return () => {};
+      }
+      cleanupHandlers.add(handler);
+      return () => cleanupHandlers.delete(handler);
+    },
   };
+
+  removeClientAbortListener = bindClientAbort(clientSignal, () => {
+    controller.handleDisconnect(clientSignal.reason);
+  });
+
+  return controller;
 }
 
 /**
@@ -182,14 +239,14 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * Measuring stall on the transform output caused false stalls and the
  * "failed to pipe response" error in Next.
  *
- * Any upstream chunk resets the timer. If no bytes arrive for
- * STREAM_STALL_TIMEOUT_MS, abort the underlying fetch via the controller.
+ * The first chunk and subsequent inactivity use independent deadlines. Any
+ * upstream chunk switches to and resets the inter-chunk stall deadline.
  *
  * @param {Response} providerResponse - Response from provider
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, streamMetrics = null) {
+export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, streamMetrics = null, firstChunkTimeoutMs = STREAM_FIRST_CHUNK_TIMEOUT_MS) {
   let stallTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
@@ -201,13 +258,23 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   };
   const armStall = () => {
     clearStall();
+    const awaitingFirstChunk = chunkCount === 0;
+    const timeoutMs = awaitingFirstChunk ? firstChunkTimeoutMs : stallTimeoutMs;
+    const timeoutCode = awaitingFirstChunk
+      ? STREAM_TIMEOUT_ERROR_CODES.FIRST_CHUNK
+      : STREAM_TIMEOUT_ERROR_CODES.STALL;
+    const timeoutMessage = awaitingFirstChunk
+      ? "stream first chunk timeout"
+      : "stream stall timeout";
     stallTimer = setTimeout(() => {
       stallTimer = null;
-      dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${Date.now() - lastChunkAt}ms`);
-      streamController.handleError?.(new Error("stream stall timeout"));
+      dbg(tag, `${timeoutCode} ${timeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${Date.now() - lastChunkAt}ms`);
+      streamController.handleError?.(createStreamTimeoutError(timeoutCode, timeoutMessage));
       streamController.abort?.();
-    }, stallTimeoutMs);
+    }, timeoutMs);
   };
+
+  streamController.addCleanup?.(clearStall);
 
   // Wrap controller so every termination path clears the stall timer.
   // Without this, abort/cancel/downstream-error paths leave the timer armed
@@ -223,7 +290,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   };
 
   armStall();
-  dbg(tag, `pipe start | stallTimeout=${stallTimeoutMs}ms`);
+  dbg(tag, `pipe start | firstChunkTimeout=${firstChunkTimeoutMs}ms | stallTimeout=${stallTimeoutMs}ms`);
 
   const upstreamTap = new TransformStream({
     transform(chunk, controller) {

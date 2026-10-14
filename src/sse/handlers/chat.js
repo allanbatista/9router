@@ -1,3 +1,10 @@
+import {
+  isModelInCooldown,
+  markModelInCooldown,
+  clearModelCooldown,
+  getModelFallbackChain,
+  DEFAULT_MODEL_COOLDOWN_MS,
+} from "open-sse/services/modelFallback.js";
 import "open-sse/index.js";
 
 import {
@@ -8,7 +15,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
-import { getModelInfo, getComboConfig } from "../services/model.js";
+import { getModelInfo, getComboConfig, parseModel } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
@@ -17,7 +24,7 @@ import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, STREAM_TIMEOUT_ERROR_CODES } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -46,6 +53,28 @@ function deriveComboAffinity(providerOrCombo, body, request, clientRawRequest) {
   // combo affinity always normalized as raw (no toNumeric) — combo spans providers
   const hash = hashCacheKey(ident.sessionId.trim());
   return { cacheKeyHash: hash, rawKey: ident.sessionId };
+}
+
+const STREAM_TIMEOUT_CODES = new Set(Object.values(STREAM_TIMEOUT_ERROR_CODES));
+
+function isStreamTimeout(error) {
+  return STREAM_TIMEOUT_CODES.has(error?.code);
+}
+
+function getCooldownIdentity(modelStr) {
+  const parsed = parseModel(modelStr);
+  if (parsed.provider) return { provider: parsed.provider, model: parsed.model };
+  if (parsed.model?.startsWith("gemini-")) return { provider: "antigravity", model: parsed.model };
+  if (parsed.model?.startsWith("claude-")) return { provider: "anthropic", model: parsed.model };
+  return { provider: "openai", model: parsed.model };
+}
+
+function excludeCoolingModels(models) {
+  const available = models.filter((modelStr) => {
+    const { provider, model } = getCooldownIdentity(modelStr);
+    return !isModelInCooldown(provider, model);
+  });
+  return available.length > 0 ? available : models;
 }
 /**
  * Handle chat completion request
@@ -121,9 +150,6 @@ export async function handleChat(request, clientRawRequest = null, options = {})
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[normalizedComboName]?.fallbackStrategy || comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
-    const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
-    const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
-
     if (comboStrategy === "fusion") {
       log.info("CHAT", `Combo "${normalizedComboName}" with ${comboModels.length} models (strategy: fusion)`);
       return handleFusionChat({
@@ -144,6 +170,9 @@ export async function handleChat(request, clientRawRequest = null, options = {})
       });
     }
 
+    const availableComboModels = excludeCoolingModels(comboModels);
+    const augmentedModels = augmentModelsWithCapacityAdapter(availableComboModels, requiredCapabilities, settings);
+    const adapterAdded = augmentedModels.filter((m) => !availableComboModels.includes(m));
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     const comboAff = comboStrategy === "round-robin-affinity" ? deriveComboAffinity(normalizedComboName, body, request, clientRawRequest) : { cacheKeyHash: null, rawKey: null };
     log.info("CHAT", `Combo "${normalizedComboName}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
@@ -151,7 +180,7 @@ export async function handleChat(request, clientRawRequest = null, options = {})
       body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m, streamFailureContext) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, streamFailureContext),
         adapterAdded
       ),
       log,
@@ -162,6 +191,31 @@ export async function handleChat(request, clientRawRequest = null, options = {})
       rawKey: comboAff.rawKey
     });
   }
+  // Automatic Model Degradation / Fallback Chain if enabled (or if model is in cooldown)
+  if (settings.autoModelFallback !== false) {
+    const chain = getModelFallbackChain(modelStr);
+    if (chain.length > 1) {
+      // Filter out models that are currently in 1h cooldown cache
+      const targetChain = excludeCoolingModels(chain);
+      if (targetChain.length > 1) {
+        const augmentedChain = augmentModelsWithCapacityAdapter(targetChain, requiredCapabilities, settings);
+        const adapterAdded = augmentedChain.filter((m) => !targetChain.includes(m));
+        log.info("CHAT", `Auto model fallback chain for "${modelStr}" → [${augmentedChain.join(", ")}]`);
+        return handleComboChat({
+          body,
+          models: augmentedChain,
+          handleSingleModel: withCapacityAdapterStripping(
+            (b, m, streamFailureContext) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, streamFailureContext),
+            adapterAdded
+          ),
+          log,
+          comboName: modelStr,
+          comboStrategy: "fallback"
+        });
+      }
+    }
+  }
+
   // Single model request — may still switch to a capacity-adapter model if the
   // target lacks a capability the request needs (e.g. no vision, request has an image).
   const soloAugmented = augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings);
@@ -172,7 +226,7 @@ export async function handleChat(request, clientRawRequest = null, options = {})
       body,
       models: soloAugmented,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m, streamFailureContext) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, streamFailureContext),
         adapterAdded
       ),
       log,
@@ -187,7 +241,7 @@ export async function handleChat(request, clientRawRequest = null, options = {})
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, streamFailureContext = null) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -232,7 +286,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          (b, m, nextStreamFailureContext) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, nextStreamFailureContext),
           adapterAdded
         ),
         log,
@@ -261,6 +315,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const affinity = deriveAffinityParams(provider, model, body, request, clientRawRequest);
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { cacheKeyHash: affinity.cacheKeyHash, rawKey: affinity.rawKey });
     if (!credentials || credentials.allRateLimited) {
+      const chatSettings = await getSettings();
+      const cooldownDuration = chatSettings.modelCooldownMs || DEFAULT_MODEL_COOLDOWN_MS;
+      // If all accounts failed/locked for this model, put model in 1h global cooldown
+      markModelInCooldown(provider, model, cooldownDuration);
+      log.warn("CHAT", `All accounts unavailable for [${provider}/${model}] → marked model in cooldown (${Math.round(cooldownDuration / 60000)}m)`);
+
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
@@ -274,7 +334,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       log.warn("CHAT", "No more accounts available", { provider });
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
-
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
@@ -297,6 +356,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       credentials: refreshedCredentials,
       log,
       clientRawRequest,
+      clientSignal: request?.signal,
       connectionId: credentials.connectionId,
       userAgent,
       apiKey,
@@ -326,7 +386,20 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         });
       },
       onRequestSuccess: async () => {
+        clearModelCooldown(provider, model);
         await clearAccountError(credentials.connectionId, credentials, model);
+      },
+      onStreamFailure: async (error) => {
+        if (!isStreamTimeout(error)) return;
+        const { shouldFallback } = await markAccountUnavailable(
+          credentials.connectionId,
+          HTTP_STATUS.GATEWAY_TIMEOUT,
+          error.message,
+          provider,
+          model,
+        );
+        if (!shouldFallback) return;
+        await streamFailureContext?.onStreamFailure?.(error);
       }
     });
 

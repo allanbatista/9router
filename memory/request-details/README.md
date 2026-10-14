@@ -20,7 +20,7 @@ flowchart LR
 
 ## Fluxo
 
-A API valida paginação e filtros, incluindo `sessionId`, o repositório ordena os registros pelo instante UTC equivalente e a UI apresenta os resultados em páginas. Streams são inseridos como `streaming` e finalizados como `success` (incluindo tool-calls emitidas), `aborted` (`client_closed` sem tool-call) ou `error`. Registros legados com `client_closed` e tool-call parcial são apresentados como `success` pela UI. A classificação compartilhada diferencia `tool_call`, `agent` e `chat`.
+A API valida paginação e filtros, incluindo `sessionId`, o repositório ordena os registros pelo instante UTC equivalente e a UI apresenta os resultados em páginas. Streams são inseridos como `streaming` e finalizados como `success` (incluindo tool-calls emitidas), `aborted` (`client_closed` sem tool-call) ou `error`. O sinal de cancelamento HTTP é propagado ao fetch upstream, e timeouts distinguem espera pelo primeiro chunk de paralisação entre chunks. Registros legados com `client_closed` e tool-call parcial são apresentados como `success` pela UI. A classificação compartilhada diferencia `tool_call`, `agent` e `chat`.
 
 ## Fontes no código
 

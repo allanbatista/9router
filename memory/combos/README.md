@@ -17,11 +17,12 @@ flowchart LR
   REPO --> MONGO[(MongoDB combos)]
   MONGO --> ROUTE[getComboConfig]
   ROUTE --> EXEC[chat combo execution]
+  EXEC -->|stream timeout| AFFINITY[comboAffinity next model]
 ```
 
 ## Fluxo
 
-Cada modelo configurado em um combo pode ter seu reasoning effort definido individualmente no modal via combobox, gerando a notação `modelo(effort)`. Durante uma requisição de chat, o modelo em execução aplica sua configuração de reasoning effort diretamente ao provedor correspondente.
+Cada modelo configurado em um combo pode ter seu reasoning effort definido individualmente no modal via combobox, gerando a notação `modelo(effort)`. Durante uma requisição de chat, o modelo em execução aplica sua configuração de reasoning effort diretamente ao provedor correspondente. Em `round-robin-affinity`, timeout tardio move a sessão para o próximo modelo na requisição seguinte.
 ## Fontes no codigo
 
 - `src/shared/constants/combo.js`

@@ -23,6 +23,8 @@ const DEFAULT_SETTINGS = {
     audioInput: { enabled: true, roundRobin: false, models: [] },
     videoInput: { enabled: false, roundRobin: false, models: [] },
   },
+  autoModelFallback: true,
+  modelCooldownMs: 3600000,
   requireLogin: true,
   requireApiKey: true,
   tunnelDashboardAccess: true,

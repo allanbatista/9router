@@ -292,7 +292,7 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {Object} options
  * @param {Object} options.body - Request body
  * @param {string[]} options.models - Array of model strings to try
- * @param {Function} options.handleSingleModel - Function to handle single model: (body, modelStr) => Promise<Response>
+ * @param {Function} options.handleSingleModel - Function to handle single model: (body, modelStr, streamFailureContext) => Promise<Response>
  * @param {Object} options.log - Logger object
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
  * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
@@ -329,11 +329,19 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr);
+      const streamFailureContext = createStreamFailureContext({
+        comboName,
+        cacheKeyHash,
+        rawKey,
+        nextModel: rotatedModels[i + 1] || null,
+        failedModel: modelStr,
+        log,
+      });
+      const result = await handleSingleModel(body, modelStr, streamFailureContext);
       
-      // Success (2xx) - return response
+      // A 2xx response was accepted. Streaming completion is tracked later.
       if (result.ok) {
-        log.info("COMBO", `Model ${modelStr} succeeded`);
+        log.info("COMBO", `Model ${modelStr} accepted`);
         return result;
       }
 
@@ -406,6 +414,16 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     JSON.stringify({ error: { message: msg } }),
     { status, headers: { "Content-Type": "application/json" } }
   );
+}
+
+function createStreamFailureContext({ comboName, cacheKeyHash, rawKey, nextModel, failedModel, log }) {
+  if (!comboName || !cacheKeyHash || !nextModel) return null;
+  return {
+    async onStreamFailure() {
+      await setComboAffinity(comboName, cacheKeyHash, rawKey || cacheKeyHash, nextModel);
+      log?.warn?.("COMBO", `Stream failed for ${failedModel}; affinity moved to ${nextModel}`);
+    },
+  };
 }
 
 /**

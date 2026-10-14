@@ -9,6 +9,9 @@ Construir o payload final do endpoint Cloud Code do Antigravity e enviá-lo pelo
 - `AntigravityExecutor`: executor específico para URL, headers e transformação do payload.
 - `request.contents`: sequência Gemini de mensagens com `role` e `parts`.
 - `parts`: partes de texto, pensamento, `functionCall` e `functionResponse`.
+- `firstChunkTimeoutMs`: prazo de 60 segundos para o primeiro chunk do Antigravity.
+- `stallTimeoutMs`: prazo de 90 segundos sem novos bytes antes de abortar o stream.
+- `timeoutMs`: prazo de 30 segundos para conexão, com uma repetição em erro 502.
 
 ## Relações
 
@@ -20,6 +23,7 @@ Construir o payload final do endpoint Cloud Code do Antigravity e enviá-lo pelo
 2. Remover partes somente de pensamento e completar `thoughtSignature` de chamadas de ferramenta.
 3. Remover qualquer item `contents` que ficou com `parts` vazio.
 4. Sanitizar schemas, limitar tokens e enviar ao upstream.
+5. Encerrar streams sem primeiro chunk ou paralisados antes do watchdog do cliente e notificar o fallback.
 
 Um item `model` com `parts: []` gera `400 INVALID_ARGUMENT` no upstream Google.
 
@@ -27,5 +31,8 @@ Um item `model` com `parts: []` gera `400 INVALID_ARGUMENT` no upstream Google.
 
 - `open-sse/executors/antigravity.js`
 - `open-sse/executors/base.js`
+- `open-sse/config/runtimeConfig.js`
+- `open-sse/providers/registry/antigravity.js`
+- `open-sse/utils/streamHandler.js`
 - `open-sse/translator/request/openai-to-gemini.js`
 - `tests/translator/bugs-antigravity.test.js`

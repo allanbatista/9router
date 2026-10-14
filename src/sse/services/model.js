@@ -1,3 +1,4 @@
+import { isVirtualModel, getModelFallbackChain } from "open-sse/services/modelFallback.js";
 // Re-export from open-sse with localDb integration
 import { getModelAliases, getComboByName, getComboById, getProviderNodes } from "@/lib/localDb";
 import { parseModel as parseModelCore, resolveModelAliasFromMap, getModelInfoCore } from "open-sse/services/model.js";
@@ -80,6 +81,9 @@ export async function getModelInfo(modelStr) {
     // The caller (handleChat) will detect this and handle it as combo
     return { provider: null, model: parsed.model };
   }
+  if (isVirtualModel(parsed.model)) {
+    return { provider: null, model: parsed.model };
+  }
 
   return getModelInfoCore(modelStr, getModelAliases);
 }
@@ -94,7 +98,20 @@ function getComboLookupName(modelStr) {
 export async function getComboConfig(modelStr) {
   const target = getComboLookupName(modelStr);
   if (!target) return null;
-  return (await getComboByName(target)) || (await getComboById(target));
+  const combo = (await getComboByName(target)) || (await getComboById(target));
+  if (combo) return combo;
+  if (isVirtualModel(target)) {
+    const chain = getModelFallbackChain(target);
+    if (chain.length > 0) {
+      return {
+        id: target,
+        name: target,
+        models: chain,
+        isVirtual: true,
+      };
+    }
+  }
+  return null;
 }
 
 /**

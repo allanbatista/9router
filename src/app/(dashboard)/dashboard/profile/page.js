@@ -321,6 +321,31 @@ export default function ProfilePage() {
       console.error("Failed to update combo sticky limit:", err);
     }
   };
+  const updateAutoModelFallback = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoModelFallback: enabled }),
+      });
+      if (res.ok) {
+        setSettings(prev => ({ ...prev, autoModelFallback: enabled }));
+      }
+    } catch (err) {
+      console.error("Failed to update auto model fallback:", err);
+    }
+  };
+
+  const clearModelCooldowns = async () => {
+    try {
+      const res = await fetch("/api/models", { method: "DELETE" });
+      if (res.ok) {
+        alert("Model cooldown cache cleared successfully.");
+      }
+    } catch (err) {
+      console.error("Failed to clear cooldowns:", err);
+    }
+  };
 
   const updateRequireLogin = async (requireLogin) => {
     try {
@@ -1622,6 +1647,38 @@ export default function ProfilePage() {
                 />
               </div>
             )}
+
+            {/* Auto Model Version Degradation Fallback */}
+            <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm sm:text-base">Auto Model Version Degradation (Fallback)</p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  Automatically fallback to prior model version if latest version is unavailable on all accounts (e.g. Gemini 3.8 → 3.7). Uses a 1-hour unavailability cache.
+                </p>
+              </div>
+              <Toggle
+                checked={settings.autoModelFallback !== false}
+                onChange={() => updateAutoModelFallback(!(settings.autoModelFallback !== false))}
+                disabled={loading}
+              />
+            </div>
+
+            {/* Reset Model Cooldown Cache */}
+            <div className="flex items-center justify-between pt-2 border-t border-border/50">
+              <div>
+                <p className="font-medium text-sm">Model Cooldown Cache</p>
+                <p className="text-xs text-text-muted">Clear cached 1h model unavailability to retry earlier versions immediately</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={clearModelCooldowns}
+                disabled={loading}
+                className="text-xs"
+              >
+                Clear Cooldowns
+              </Button>
+            </div>
             <p className="text-xs text-text-muted italic pt-2 border-t border-border/50">
               {settings.fallbackStrategy === "round-robin-affinity"
                 ? "Affinity: same session/cache key stays on same account per model (30m TTL). Maximizes cache hits; blocked sessions auto-repin."

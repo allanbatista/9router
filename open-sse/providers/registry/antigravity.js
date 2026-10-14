@@ -1,4 +1,9 @@
 import { ANTIGRAVITY_IDE_BASE_URL, ANTIGRAVITY_IDE_USER_AGENT, ANTIGRAVITY_OAUTH_CLIENT } from "../shared.js";
+import {
+  ANTIGRAVITY_FETCH_CONNECT_TIMEOUT_MS,
+  ANTIGRAVITY_STREAM_FIRST_CHUNK_TIMEOUT_MS,
+  ANTIGRAVITY_STREAM_STALL_TIMEOUT_MS,
+} from "../../config/runtimeConfig.js";
 
 export default {
   id: "antigravity",
@@ -34,7 +39,14 @@ export default {
       "503": {
         attempts: 3,
       },
+      "502": {
+        attempts: 1,
+        delayMs: 2000,
+      },
     },
+    timeoutMs: ANTIGRAVITY_FETCH_CONNECT_TIMEOUT_MS,
+    firstChunkTimeoutMs: ANTIGRAVITY_STREAM_FIRST_CHUNK_TIMEOUT_MS,
+    stallTimeoutMs: ANTIGRAVITY_STREAM_STALL_TIMEOUT_MS,
     usage: {
       // Discovery (quota/project) on PROD; daily host rejects these.
       quotaApiUrl: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
@@ -45,10 +57,12 @@ export default {
     clientSecret: "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",
   },
   models: [
+    { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", upstreamModelId: "gemini-3.8-flash-tiered(high)" },
     { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", upstreamModelId: "gemini-3.8-flash-tiered(high)" },
     { id: "gemini-4-argon", name: "Gemini 4 Argon" },
     { id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", upstreamModelId: "gemini-3.8-flash-tiered(medium)" },
     { id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", upstreamModelId: "gemini-3.8-flash-tiered(low)" },
+    { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash", upstreamModelId: "gemini-3.7-flash-tiered(high)" },
     { id: "gemini-3.7-flash-high", name: "Gemini 3.7 Flash (High)", upstreamModelId: "gemini-3.7-flash-tiered(high)" },
     { id: "gemini-3.7-flash-medium", name: "Gemini 3.7 Flash (Medium)", upstreamModelId: "gemini-3.7-flash-tiered(medium)" },
     { id: "gemini-3.7-flash-low", name: "Gemini 3.7 Flash (Low)", upstreamModelId: "gemini-3.7-flash-tiered(low)" },
