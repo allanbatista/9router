@@ -254,7 +254,10 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
       break;
     }
     case "gemini-level": {
-      const level = none ? "minimal" : toGeminiThinkingLevel(eff);
+      const requestedLevel = none ? "minimal" : toGeminiThinkingLevel(eff);
+      const level = requestedLevel === "minimal" && !supportedLevels?.includes("minimal")
+        ? supportedLevels?.[0] || requestedLevel
+        : requestedLevel;
       setGeminiThinking(body, { thinkingLevel: level, includeThoughts: level !== "minimal" });
       ensureGeminiOutputFloor(body, geminiLevelOutputFloor(level), caps);
       break;
