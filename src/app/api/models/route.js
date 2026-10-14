@@ -1,3 +1,4 @@
+import { VIRTUAL_MODEL_FAMILIES, getModelFallbackChain, getAllActiveModelCooldowns, clearModelCooldown } from "open-sse/services/modelFallback.js";
 import { NextResponse } from "next/server";
 import { getModelAliases, setModelAlias } from "@/models";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
@@ -36,8 +37,36 @@ export async function GET() {
           },
         };
       });
+    // Add virtual fallback models
+    const virtualModels = Object.entries(VIRTUAL_MODEL_FAMILIES).map(([vId, famKey]) => {
+      const chain = getModelFallbackChain(vId);
+      const topModel = chain[0] || vId;
+      const provider = vId.startsWith("gemini-") ? "antigravity" : vId.startsWith("claude-") ? "anthropic" : "openai";
+      const c = getCapabilitiesForModel(provider, topModel);
+      const name = `${vId.replace(/-/g, " ").replace(/\b\w/g, l => l.toUpperCase())} (Auto Fallback)`;
+      return {
+        provider: "virtual",
+        model: vId,
+        name,
+        fullModel: `virtual/${vId}`,
+        routedModel: vId,
+        alias: vId,
+        isVirtual: true,
+        family: famKey,
+        fallbackChain: chain,
+        caps: {
+          vision: c.vision,
+          search: c.search,
+          reasoning: c.reasoning,
+          contextWindow: c.contextWindow,
+          maxOutput: c.maxOutput,
+        },
+      };
+    });
 
-    return NextResponse.json({ models });
+    const activeCooldowns = getAllActiveModelCooldowns();
+
+    return NextResponse.json({ models: [...models, ...virtualModels], activeCooldowns });
   } catch (error) {
     console.log("Error fetching models:", error);
     return NextResponse.json({ error: "Failed to fetch models" }, { status: 500 });
@@ -72,5 +101,18 @@ export async function PUT(request) {
   } catch (error) {
     console.log("Error updating alias:", error);
     return NextResponse.json({ error: "Failed to update alias" }, { status: 500 });
+  }
+}
+
+// DELETE /api/models - Clear cooldown cache for models
+export async function DELETE(request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const provider = searchParams.get("provider");
+    const model = searchParams.get("model");
+    clearModelCooldown(provider, model);
+    return NextResponse.json({ success: true, message: "Model cooldown cache cleared" });
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

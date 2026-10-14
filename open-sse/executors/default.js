@@ -67,7 +67,7 @@ export class DefaultExecutor extends BaseExecutor {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  transformRequest(model, body) {
+  transformRequest(model, body, stream = true) {
     const transformed = this.applyJsonSchemaFallback(body);
 
     if (transformed && typeof transformed === "object") {
@@ -76,6 +76,12 @@ export class DefaultExecutor extends BaseExecutor {
         delete transformed.client_metadata;
       }
       stripUnsupportedParams(this.provider, model, transformed);
+      // OpenRouter/deepseek only returns cached_tokens when stream_options.include_usage is set.
+      // Missing it made streaming fall back to estimateUsage → cached=0 even with same session.
+      const isStreaming = stream === true || transformed.stream === true || body?.stream === true;
+      if (isStreaming && !transformed.stream_options) {
+        transformed.stream_options = { include_usage: true };
+      }
     }
 
     return injectReasoningContent({ provider: this.provider, model, body: transformed });

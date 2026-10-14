@@ -9,7 +9,7 @@ import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModa
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
-
+import { COMBO_DEFAULT_EFFORT_OPTIONS, parseModelEffort, formatModelWithEffort } from "@/shared/constants/combo.js";
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 
@@ -291,6 +291,7 @@ export default function CombosPage() {
 const STRATEGY_OPTIONS = [
   { value: "fallback", label: "Fallback — try in order" },
   { value: "round-robin", label: "Round Robin — rotate" },
+  { value: "round-robin-affinity", label: "Affinity — sticky per session (30m)" },
   { value: "fusion", label: "Fusion — panel + judge" },
 ];
 
@@ -561,17 +562,30 @@ function ModelItem({ id, index, model, isFirst, isLast, onEdit, onMoveUp, onMove
     zIndex: isDragging ? 999 : undefined,
   };
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(model);
+  const { baseModel, effort } = parseModelEffort(model);
+  const [draft, setDraft] = useState(baseModel);
+
+  useEffect(() => {
+    setDraft(baseModel);
+  }, [baseModel]);
+
   const commit = () => {
     const trimmed = draft.trim();
-    if (trimmed && trimmed !== model) onEdit(trimmed);
-    else setDraft(model);
+    if (trimmed && trimmed !== baseModel) {
+      onEdit(formatModelWithEffort(trimmed, effort));
+    } else {
+      setDraft(baseModel);
+    }
     setEditing(false);
   };
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter") commit();
-    if (e.key === "Escape") { setDraft(model); setEditing(false); }
+    if (e.key === "Escape") { setDraft(baseModel); setEditing(false); }
+  };
+
+  const handleEffortChange = (newEffort) => {
+    onEdit(formatModelWithEffort(baseModel, newEffort));
   };
 
   return (
@@ -612,11 +626,28 @@ function ModelItem({ id, index, model, isFirst, isLast, onEdit, onMoveUp, onMove
         <div
           className="min-w-0 flex-1 cursor-text truncate rounded px-1.5 py-0.5 font-mono text-xs text-text-main hover:bg-black/5 dark:hover:bg-white/5"
           onClick={() => setEditing(true)}
-          title="Click to edit"
+          title="Click to edit model"
         >
-          {model}
+          {baseModel}
         </div>
       )}
+
+      {/* Per-model Effort selector combobox */}
+      <div className="shrink-0">
+        <select
+          value={effort || ""}
+          onChange={(e) => handleEffortChange(e.target.value)}
+          className="rounded border border-black/10 dark:border-white/10 bg-surface px-1.5 py-0.5 text-[11px] font-sans text-text-main focus:outline-none focus:ring-1 focus:ring-primary/40"
+          title="Reasoning effort override"
+        >
+          <option value="">Effort: Default</option>
+          {COMBO_DEFAULT_EFFORT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              Effort: {opt.label}
+            </option>
+          ))}
+        </select>
+      </div>
 
       {/* Priority arrows */}
       <div className="flex shrink-0 items-center gap-0.5">
@@ -720,7 +751,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   };
 
   const handleDeselectModel = (model) => {
-    setModels(models.filter((m) => m !== model.value));
+    setModels(models.filter((m) => m !== model.value && parseModelEffort(m).baseModel !== model.value));
   };
 
   const handleRemoveModel = (index) => {
@@ -771,6 +802,8 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
               Only letters, numbers, -, _ and . allowed
             </p>
           </div>
+
+
 
           {/* Models */}
           <div>
@@ -846,7 +879,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
           modelAliases={modelAliases}
           title="Add Model to Combo"
           kindFilter={kindFilter}
-          addedModelValues={models}
+          addedModelValues={models.map((m) => parseModelEffort(m).baseModel)}
           closeOnSelect={false}
         />
       )}

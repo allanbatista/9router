@@ -1,5 +1,8 @@
-import { getAdapter } from "../driver.js";
-import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import mongoose from "mongoose";
+import { v7 as uuidv7 } from "uuid";
+import { getConnection } from "../connection.js";
+import { RequestDetail } from "../models/RequestDetail.js";
+import { classifyRequest } from "@/shared/utils/requestClassification.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -68,13 +71,10 @@ function sanitizeHeaders(headers) {
   return sanitized;
 }
 
-export const __test__ = { sanitizeHeaders };
+export const __test__ = { sanitizeHeaders, getWriteBuffer: () => writeBuffer, clearWriteBuffer: () => { writeBuffer = []; } };
 
-function generateDetailId(model) {
-  const timestamp = new Date().toISOString();
-  const random = Math.random().toString(36).substring(2, 8);
-  const modelPart = model ? model.replace(/[^a-zA-Z0-9-]/g, "-") : "unknown";
-  return `${timestamp}-${random}-${modelPart}`;
+function generateDetailId() {
+  return uuidv7();
 }
 
 function truncateField(obj, maxSize) {
@@ -85,53 +85,170 @@ function truncateField(obj, maxSize) {
   return obj || {};
 }
 
-async function flushToDatabase() {
+function is4xxStatus(status) {
+  if (status == null) return false;
+  const s = String(status).trim();
+  const n = parseInt(s.match(/\b(\d{3})\b/)?.[1] || s, 10);
+  return Number.isFinite(n) && n >= 400 && n < 500;
+}
+
+function restoreErrorProviderResponse(detail) {
+  if (!detail || !detail.response || detail.providerResponse == null) return detail;
+  if (typeof detail.providerResponse !== "object" || Object.keys(detail.providerResponse).length > 0) return detail;
+
+  const status = detail.response.status;
+  const error = detail.response.error ?? detail.error;
+  if (status == null || error == null) return detail;
+
+  return {
+    ...detail,
+    providerResponse: {
+      status,
+      body: typeof error === "string" ? error : JSON.stringify(error),
+      recoveredFromStoredError: true,
+    },
+  };
+}
+
+function docToDetail(doc) {
+  if (!doc) return null;
+  const data = doc.data && typeof doc.data === "object" ? doc.data : {};
+  const idStr = String(doc._id || data.id || "");
+  const detail = {
+    id: idStr,
+    timestamp: doc.timestamp instanceof Date ? doc.timestamp.toISOString() : (doc.timestamp || data.timestamp),
+    provider: doc.provider ?? data.provider ?? null,
+    model: doc.model ?? data.model ?? null,
+    connectionId: doc.connectionId ?? data.connectionId ?? null,
+    status: doc.status ?? data.status ?? null,
+    agentMetadata: (doc.agentMetadata && typeof doc.agentMetadata === "object" && Object.keys(doc.agentMetadata).length > 0)
+      ? doc.agentMetadata
+      : (data.agentMetadata && typeof data.agentMetadata === "object" ? data.agentMetadata : {}),
+    latency: data.latency || {},
+    tokens: data.tokens || {},
+    request: data.request || {},
+    providerRequest: data.providerRequest ?? null,
+    providerResponse: data.providerResponse ?? null,
+    response: data.response || {},
+    error: data.error ?? null,
+    ...(data.pxpipe ? { pxpipe: data.pxpipe } : {}),
+  };
+  const classification = classifyRequest({ ...doc, ...detail, data });
+  return restoreErrorProviderResponse({
+    ...detail,
+    requestType: doc.requestType ?? data.requestType ?? classification.requestType,
+    agentRequestType: doc.agentRequestType ?? data.agentRequestType ?? classification.agentRequestType,
+    isToolCall: doc.isToolCall ?? data.isToolCall ?? classification.isToolCall,
+    toolCallCount: doc.toolCallCount ?? data.toolCallCount ?? classification.toolCallCount,
+    toolCallNames: doc.toolCallNames ?? data.toolCallNames ?? classification.toolCallNames,
+    sessionId: doc.sessionId ?? data.sessionId ?? classification.sessionId,
+    rawSessionId: doc.rawSessionId ?? data.rawSessionId ?? classification.rawSessionId,
+    cacheKey: doc.cacheKey ?? data.cacheKey ?? classification.cacheKey,
+    conversationId: doc.conversationId ?? data.conversationId ?? classification.conversationId,
+  });
+}
+
+export async function flushToDatabase() {
   if (isFlushing) return;
   if (writeBuffer.length === 0) return;
   isFlushing = true;
   try {
-    // Drain entire buffer (loop in case more pushed during await)
     while (writeBuffer.length > 0) {
       const items = writeBuffer.splice(0, writeBuffer.length);
-      const db = await getAdapter();
+      await getConnection();
       const config = await getObservabilityConfig();
 
-      db.transaction(() => {
-        for (const item of items) {
-          if (!item.id) item.id = generateDetailId(item.model);
-          if (!item.timestamp) item.timestamp = new Date().toISOString();
-          if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
+      const docsToInsert = items.map((item) => {
+        const id = item.id || generateDetailId();
+        const timestamp = item.timestamp ? new Date(item.timestamp) : new Date();
+        if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
 
-          const record = {
-            id: item.id,
-            provider: item.provider || null,
-            model: item.model || null,
-            connectionId: item.connectionId || null,
-            timestamp: item.timestamp,
-            status: item.status || null,
-            latency: item.latency || {},
-            tokens: item.tokens || {},
-            request: truncateField(item.request, config.maxJsonSize),
-            providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
-            providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
-            response: truncateField(item.response, config.maxJsonSize),
-            pxpipe: item.pxpipe || undefined,
-          };
-
-          db.run(
-            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data`,
-            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
-          );
+        const rawAgentMetadata = item.agentMetadata || item.request?._agent_metadata || {};
+        let agentMetadata = {};
+        if (Array.isArray(rawAgentMetadata)) {
+          for (const entry of rawAgentMetadata) {
+            if (entry?.key != null && entry?.value != null) {
+              agentMetadata[String(entry.key)] = entry.value;
+            }
+          }
+        } else if (rawAgentMetadata && typeof rawAgentMetadata === "object") {
+          agentMetadata = { ...rawAgentMetadata };
         }
 
-        const cnt = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
-        if (cnt && cnt.c > config.maxRecords) {
-          db.run(
-            `DELETE FROM requestDetails WHERE id IN (SELECT id FROM requestDetails ORDER BY timestamp ASC LIMIT ?)`,
-            [cnt.c - config.maxRecords]
-          );
-        }
+        const classification = classifyRequest(item);
+        const is4xx = is4xxStatus(item.status) || is4xxStatus(item.response?.status);
+        const record = {
+          id,
+          provider: item.provider || null,
+          model: item.model || null,
+          connectionId: item.connectionId || null,
+          timestamp: timestamp.toISOString(),
+          status: item.status || null,
+          agentMetadata,
+          latency: item.latency || {},
+          tokens: item.tokens || {},
+          request: is4xx ? (item.request || {}) : truncateField(item.request, config.maxJsonSize),
+          providerRequest: is4xx ? (item.providerRequest || null) : truncateField(item.providerRequest, config.maxJsonSize),
+          providerResponse: is4xx ? (item.providerResponse ?? null) : truncateField(item.providerResponse, config.maxJsonSize),
+          response: is4xx ? (item.response ?? {}) : truncateField(item.response, config.maxJsonSize),
+          error: item.error || null,
+          pxpipe: item.pxpipe || undefined,
+          requestType: item.requestType || classification.requestType,
+          agentRequestType: item.agentRequestType || classification.agentRequestType,
+          isToolCall: item.isToolCall ?? classification.isToolCall,
+          toolCallCount: item.toolCallCount ?? classification.toolCallCount,
+          toolCallNames: item.toolCallNames || classification.toolCallNames,
+          sessionId: item.sessionId || classification.sessionId,
+          rawSessionId: item.rawSessionId || classification.rawSessionId,
+          cacheKey: item.cacheKey || classification.cacheKey,
+          conversationId: item.conversationId || classification.conversationId,
+        };
+
+        return {
+          _id: id,
+          timestamp,
+          provider: record.provider,
+          model: record.model,
+          connectionId: record.connectionId,
+          status: record.status,
+          agentMetadata,
+          requestType: record.requestType,
+          agentRequestType: record.agentRequestType,
+          isToolCall: record.isToolCall,
+          toolCallCount: record.toolCallCount,
+          toolCallNames: record.toolCallNames,
+          sessionId: record.sessionId,
+          rawSessionId: record.rawSessionId,
+          cacheKey: record.cacheKey,
+          conversationId: record.conversationId,
+          data: record,
+        };
       });
+
+      if (docsToInsert.length > 0) {
+        const ops = docsToInsert.map((doc) => ({
+          updateOne: {
+            filter: { _id: String(doc._id) },
+            update: { $set: doc },
+            upsert: true,
+          },
+        }));
+        await RequestDetail.bulkWrite(ops, { ordered: false });
+      }
+
+      const count = await RequestDetail.countDocuments();
+      if (count > config.maxRecords) {
+        const excess = count - config.maxRecords;
+        const oldestDocs = await RequestDetail.find({})
+          .sort({ timestamp: 1 })
+          .limit(excess)
+          .select("_id")
+          .lean();
+        if (oldestDocs.length > 0) {
+          const idsToDelete = oldestDocs.map((d) => d._id);
+          await RequestDetail.deleteMany({ _id: { $in: idsToDelete } });
+        }
+      }
     }
   } catch (e) {
     console.error("[requestDetailsRepo] Batch write failed:", e);
@@ -142,70 +259,134 @@ async function flushToDatabase() {
 
 export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
-  if (!config.enabled) {return;}
+  if (!config.enabled) return;
 
   writeBuffer.push(detail);
 
-  // Trigger immediate flush if batch threshold reached.
-  // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
   if (writeBuffer.length >= config.batchSize) {
-    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
     flushToDatabase().catch((e) => console.error("[requestDetailsRepo] flush err:", e));
   } else if (!flushTimer) {
     flushTimer = setTimeout(() => {
       flushTimer = null;
       flushToDatabase().catch(() => {});
     }, config.flushIntervalMs);
+    if (flushTimer.unref) flushTimer.unref();
   }
 }
 
 export async function getRequestDetails(filter = {}) {
-  const db = await getAdapter();
-  const conds = [];
-  const params = [];
+  await getConnection();
+  const query = {};
 
-  if (filter.provider) { conds.push("provider = ?"); params.push(filter.provider); }
-  if (filter.model) { conds.push("model = ?"); params.push(filter.model); }
-  if (filter.connectionId) { conds.push("connectionId = ?"); params.push(filter.connectionId); }
-  if (filter.status) { conds.push("status = ?"); params.push(filter.status); }
-  if (filter.startDate) { conds.push("timestamp >= ?"); params.push(new Date(filter.startDate).toISOString()); }
-  if (filter.endDate) { conds.push("timestamp <= ?"); params.push(new Date(filter.endDate).toISOString()); }
+  if (filter.provider) query.provider = filter.provider;
+  if (filter.model) query.model = filter.model;
+  if (filter.connectionId) query.connectionId = filter.connectionId;
+  if (filter.status) query.status = filter.status;
+  if (filter.sessionId) {
+    const sessionId = String(filter.sessionId).trim();
+    const escaped = sessionId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    query.$or = [
+      { sessionId },
+      { "data.sessionId": sessionId },
+      { "data.providerRequest.request.sessionId": sessionId },
+      { "data.providerRequest.request.session_id": sessionId },
+      { "data.providerRequest.sessionId": sessionId },
+      { "data.providerRequest.prompt_cache_key": sessionId },
+      { "data.providerRequest.session_id": sessionId },
+      { "data.providerRequest.conversation_id": sessionId },
+      { "data.request.prompt_cache_key": sessionId },
+      { "data.request.session_id": sessionId },
+      { "data.request.conversation_id": sessionId },
+      { "agentMetadata.session-id": sessionId },
+      { "data.agentMetadata.session-id": sessionId },
+      { "data.request._agent_metadata": { $elemMatch: { key: "session-id", value: sessionId } } },
+      { "data.providerRequest.requestId": { $regex: `^agent/${escaped}/` } },
+    ];
+  }
+  if (filter.startDate || filter.endDate) {
+    query.timestamp = {};
+    if (filter.startDate) query.timestamp.$gte = new Date(filter.startDate);
+    if (filter.endDate) query.timestamp.$lte = new Date(filter.endDate);
+  }
 
-  const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-  const cntRow = db.get(`SELECT COUNT(*) as c FROM requestDetails ${where}`, params);
-  const totalItems = cntRow ? cntRow.c : 0;
+  // Dynamic agent metadata filters
+  if (filter.agentMetadata && typeof filter.agentMetadata === "object") {
+    for (const [key, value] of Object.entries(filter.agentMetadata)) {
+      if (value !== undefined && value !== null && String(value).trim() !== "") {
+        query[`agentMetadata.${key}`] = String(value).trim();
+      }
+    }
+  }
 
+  // Also support flat keys like `agentMetadata.os` or `metadata_os` passed in filter
+  for (const [k, v] of Object.entries(filter)) {
+    if (k.startsWith("agentMetadata.") && v !== undefined && v !== null && String(v).trim() !== "") {
+      query[k] = String(v).trim();
+    } else if (k.startsWith("metadata_") && v !== undefined && v !== null && String(v).trim() !== "") {
+      const metaKey = k.slice("metadata_".length);
+      query[`agentMetadata.${metaKey}`] = String(v).trim();
+    }
+  }
+
+  const totalItems = await RequestDetail.countDocuments(query);
   const page = filter.page || 1;
   const pageSize = filter.pageSize || 50;
-  const totalPages = Math.ceil(totalItems / pageSize);
+  const totalPages = Math.ceil(totalItems / pageSize) || 0;
   const offset = (page - 1) * pageSize;
 
-  const rows = db.all(
-    `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
-    [...params, pageSize, offset]
-  );
-  const details = rows.map((r) => parseJson(r.data, {}));
+  const docs = await RequestDetail.find(query)
+    .sort({ timestamp: -1, _id: -1 })
+    .skip(offset)
+    .limit(pageSize)
+    .lean();
+
+  const details = docs.map(docToDetail);
 
   return {
     details,
-    pagination: { page, pageSize, totalItems, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
+    pagination: {
+      page,
+      pageSize,
+      totalItems,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrev: page > 1,
+    },
   };
 }
 
+export async function getDistinctMetadataValues(key) {
+  if (!key || typeof key !== "string") return [];
+  await getConnection();
+  const safeKey = key.replace(/^\$+/, "").replace(/\./g, "_");
+  const values = await RequestDetail.distinct(`agentMetadata.${safeKey}`, {
+    [`agentMetadata.${safeKey}`]: { $ne: null }
+  });
+  return (values || []).filter((v) => v !== null && v !== undefined && String(v).trim() !== "").map(String).sort();
+}
+
 export async function getDistinctProviders() {
-  const db = await getAdapter();
-  const rows = db.all(`SELECT DISTINCT provider FROM requestDetails WHERE provider IS NOT NULL ORDER BY provider ASC`);
-  return rows.map((r) => r.provider);
+  await getConnection();
+  const providers = await RequestDetail.distinct("provider", { provider: { $ne: null } });
+  return (providers || []).filter(Boolean).sort();
 }
 
 export async function getRequestDetailById(id) {
-  const db = await getAdapter();
-  const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
-  return row ? parseJson(row.data, null) : null;
+  if (!id) return null;
+  await getConnection();
+  const query = { _id: String(id) };
+  const doc = await RequestDetail.findOne(query).lean();
+  return doc ? docToDetail(doc) : null;
 }
-
 const _shutdownHandler = async () => {
-  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
   if (writeBuffer.length > 0) await flushToDatabase();
 };
 

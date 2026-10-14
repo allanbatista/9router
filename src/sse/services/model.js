@@ -1,5 +1,6 @@
+import { isVirtualModel, getModelFallbackChain } from "open-sse/services/modelFallback.js";
 // Re-export from open-sse with localDb integration
-import { getModelAliases, getComboByName, getProviderNodes } from "@/lib/localDb";
+import { getModelAliases, getComboByName, getComboById, getProviderNodes } from "@/lib/localDb";
 import { parseModel as parseModelCore, resolveModelAliasFromMap, getModelInfoCore } from "open-sse/services/model.js";
 import REGISTRY from "open-sse/providers/registry/index.js";
 
@@ -36,6 +37,12 @@ export async function resolveModelAlias(alias) {
  * Get full model info (parse or resolve)
  */
 export async function getModelInfo(modelStr) {
+  if (modelStr.startsWith("combo:")) {
+    const target = modelStr.slice(6);
+    const combo = (await getComboByName(target)) || (await getComboById(target));
+    return { provider: null, model: combo ? combo.name : target };
+  }
+
   const parsed = parseModel(modelStr);
 
   if (!parsed.isAlias) {
@@ -74,8 +81,37 @@ export async function getModelInfo(modelStr) {
     // The caller (handleChat) will detect this and handle it as combo
     return { provider: null, model: parsed.model };
   }
+  if (isVirtualModel(parsed.model)) {
+    return { provider: null, model: parsed.model };
+  }
 
   return getModelInfoCore(modelStr, getModelAliases);
+}
+
+function getComboLookupName(modelStr) {
+  if (typeof modelStr !== "string") return null;
+  if (modelStr.startsWith("combo:")) return modelStr.slice(6);
+  if (modelStr.includes("/")) return null;
+  return modelStr;
+}
+
+export async function getComboConfig(modelStr) {
+  const target = getComboLookupName(modelStr);
+  if (!target) return null;
+  const combo = (await getComboByName(target)) || (await getComboById(target));
+  if (combo) return combo;
+  if (isVirtualModel(target)) {
+    const chain = getModelFallbackChain(target);
+    if (chain.length > 0) {
+      return {
+        id: target,
+        name: target,
+        models: chain,
+        isVirtual: true,
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -83,12 +119,6 @@ export async function getModelInfo(modelStr) {
  * @returns {Promise<string[]|null>} Array of models or null if not a combo
  */
 export async function getComboModels(modelStr) {
-  // Only check if it's not in provider/model format
-  if (modelStr.includes("/")) return null;
-
-  const combo = await getComboByName(modelStr);
-  if (combo && combo.models && combo.models.length > 0) {
-    return combo.models;
-  }
-  return null;
+  const combo = await getComboConfig(modelStr);
+  return combo?.models?.length > 0 ? combo.models : null;
 }

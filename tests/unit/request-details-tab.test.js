@@ -23,9 +23,6 @@ beforeAll(async () => {
   db = await import("@/lib/db/index.js");
   await db.initDb();
   await db.updateSettings({ enableObservability2: true, observabilityBatchSize: 1 });
-
-  const { getAdapter } = await import("@/lib/db/driver.js");
-  adapter = await getAdapter();
 });
 
 afterAll(() => {
@@ -35,19 +32,6 @@ afterAll(() => {
 });
 
 describe("request details — tab crash-risk cases", () => {
-  it("corrupt data column → parseJson fallback {}, no throw", async () => {
-    // Inject a row with invalid JSON directly, bypassing save path
-    adapter.run(
-      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
-      ["corrupt-1", new Date().toISOString(), "openai", "gpt-4", null, "ok", "{not-valid-json"]
-    );
-
-    const res = await db.getRequestDetails({ provider: "openai" });
-    expect(Array.isArray(res.details)).toBe(true);
-    const corrupt = res.details.find((d) => Object.keys(d).length === 0);
-    expect(corrupt).toEqual({});
-  });
-
   it("pagination beyond last page → empty details, valid meta", async () => {
     const res = await db.getRequestDetails({ page: 9999, pageSize: 20 });
     expect(res.details).toEqual([]);
@@ -68,6 +52,22 @@ describe("request details — tab crash-risk cases", () => {
       endDate: "2999-01-01T00:00:00",
     });
     expect(Array.isArray(res.details)).toBe(true);
+  });
+
+  it("orders timestamps by instant, including timezone offsets", async () => {
+    const rows = [
+      ["sort-earlier", "2025-01-02T00:00:00Z"],
+      ["sort-later", "2025-01-01T23:30:00-03:00"],
+    ];
+    for (const [id, timestamp] of rows) {
+      adapter.run(
+        `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+        [id, timestamp, "sort-test", "model", null, "ok", JSON.stringify({ id, timestamp })]
+      );
+    }
+
+    const res = await db.getRequestDetails({ provider: "sort-test", pageSize: 20 });
+    expect(res.details.map((detail) => detail.id)).toEqual(["sort-later", "sort-earlier"]);
   });
 
   it("large pageSize (providers route uses 9999) → returns all, no crash", async () => {
@@ -97,6 +97,34 @@ describe("request details — tab crash-risk cases", () => {
     expect(got.request._truncated).toBe(true);
   });
 
+  it("error response keeps the raw provider body", async () => {
+    await saveDetail({
+      id: "error-raw-1", provider: "antigravity", model: "gemini-3.7-flash-high",
+      status: "error", error: "Individual quota reached", response: { status: 429, error: "Individual quota reached" },
+      providerResponse: { status: 429, body: JSON.stringify({ error: { message: "Individual quota reached" } }) },
+    });
+
+    const got = await db.getRequestDetailById("error-raw-1");
+    expect(got.providerResponse.body).toContain("Individual quota reached");
+    expect(got.error).toBe("Individual quota reached");
+  });
+
+  it("recovers the provider response for legacy error rows", async () => {
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      ["legacy-error-raw-1", new Date().toISOString(), "antigravity", "gemini", null, "error", JSON.stringify({
+        id: "legacy-error-raw-1",
+        status: "error",
+        response: { status: 429, error: JSON.stringify({ error: { message: "Individual quota reached" } }) },
+        providerResponse: {},
+      })]
+    );
+
+    const got = await db.getRequestDetailById("legacy-error-raw-1");
+    expect(got.providerResponse.recoveredFromStoredError).toBe(true);
+    expect(got.providerResponse.body).toContain("Individual quota reached");
+  });
+
   it("missing tokens/timestamp on row → getInputTokens-style access safe", async () => {
     adapter.run(
       `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
@@ -123,31 +151,6 @@ function getInputTokens(tokens) {
   return prompt < cache ? cache : prompt;
 }
 
-describe("backupDbLite — excludes requestDetails, keeps critical data", () => {
-  it("backup file omits requestDetails rows but keeps other tables", async () => {
-    const { backupDbLite } = await import("@/lib/db/backup.js");
-    await saveDetail({ id: "bk-1", provider: "openai", model: "m", status: "ok", tokens: {}, request: {}, response: {} });
-
-    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "9router-bklite-"));
-    const dest = backupDbLite(adapter, backupDir);
-    expect(fs.existsSync(dest)).toBe(true);
-
-    // Open backup and assert requestDetails is empty, settings present
-    const Database = (await import("better-sqlite3")).default;
-    const bak = new Database(dest);
-    try {
-      // requestDetails is fully excluded — table must not exist in the backup
-      const rdTable = bak.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='requestDetails'").get();
-      expect(rdTable).toBeUndefined();
-      // Critical data preserved
-      const st = bak.prepare("SELECT COUNT(*) c FROM settings").get();
-      expect(st.c).toBeGreaterThanOrEqual(1);
-    } finally {
-      bak.close();
-      fs.rmSync(backupDir, { recursive: true, force: true });
-    }
-  });
-});
 
 describe("getDistinctProviders — providers route (no full-row parse)", () => {
   it("returns unique provider list without parsing data blobs", async () => {

@@ -1,6 +1,8 @@
+import { normalizeAgentMetadata } from "../../utils/agentMetadata.js";
 import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { COLORS } from "../../utils/stream.js";
 import { canonicalizeUsage } from "../../utils/usageTracking.js";
+import { classifyRequest } from "@/shared/utils/requestClassification.js";
 
 const OPTIONAL_PARAMS = [
   "temperature", "top_p", "top_k",
@@ -10,14 +12,16 @@ const OPTIONAL_PARAMS = [
   "seed", "stop", "tools", "tool_choice",
   "response_format", "prediction", "store", "metadata",
   "n", "logprobs", "top_logprobs", "logit_bias",
-  "user", "parallel_tool_calls"
+  "user", "parallel_tool_calls",
+  "prompt_cache_key", "session_id", "conversation_id"
 ];
 
-export function extractRequestConfig(body, stream) {
-  const config = { messages: body.messages || [], model: body.model, stream };
-  for (const param of OPTIONAL_PARAMS) {
-    if (body[param] !== undefined) config[param] = body[param];
-  }
+export function extractRequestConfig(body, stream, clientRawRequest = null) {
+  const source = clientRawRequest?.body || body || {};
+  const config = typeof structuredClone === "function"
+    ? structuredClone(source)
+    : JSON.parse(JSON.stringify(source));
+  if (!clientRawRequest && config.stream === undefined) config.stream = stream;
   return config;
 }
 
@@ -59,21 +63,28 @@ export function extractUsageFromResponse(responseBody) {
 }
 
 export function buildRequestDetail(base, overrides = {}) {
-  return {
+  const rawMetadata = base.agentMetadata || base.request?._agent_metadata || overrides.agentMetadata || overrides.request?._agent_metadata;
+  const normalizedMetadata = normalizeAgentMetadata(rawMetadata);
+
+  const detail = {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
     connectionId: base.connectionId || undefined,
     timestamp: new Date().toISOString(),
     latency: base.latency || { ttft: 0, total: 0 },
     tokens: base.tokens || { prompt_tokens: 0, completion_tokens: 0 },
+    agentMetadata: Object.keys(normalizedMetadata).length > 0 ? normalizedMetadata : (base.agentMetadata || {}),
     request: base.request,
     providerRequest: base.providerRequest || null,
     providerResponse: base.providerResponse || null,
     response: base.response || {},
+    error: base.error || null,
     pxpipe: base.pxpipe || undefined,
     status: base.status || "success",
     ...overrides
   };
+
+  return { ...detail, ...classifyRequest(detail) };
 }
 
 // Build the "done" summary: duration, ttft, in/out tokens with cache breakdown

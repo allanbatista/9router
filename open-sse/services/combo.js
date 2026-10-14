@@ -6,7 +6,8 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
-
+import { getComboAffinity, setComboAffinity, touchComboAffinity } from "@/lib/db/repos/comboAffinityRepo.js";
+import { consistentIndex } from "@/lib/db/repos/sessionAffinityRepo.js";
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
 const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
@@ -183,6 +184,8 @@ export function detectRequiredCapabilities(body) {
   return required;
 }
 
+
+
 function normalizeStickyLimit(stickyLimit) {
   const parsed = Number.parseInt(stickyLimit, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
@@ -196,17 +199,36 @@ function rotateModelsFromIndex(models, currentIndex) {
   }
   return rotatedModels;
 }
-
 /**
  * Get rotated model list based on strategy
  * @param {string[]} models - Array of model strings
  * @param {string} comboName - Name of the combo
- * @param {string} strategy - "fallback" or "round-robin"
+ * @param {string} strategy - "fallback" | "round-robin" | "round-robin-affinity" | "fusion"
  * @param {number|string} [stickyLimit=1] - Requests per combo model before switching
- * @returns {string[]} Rotated models array
+ * @param {string|null} [cacheKeyHash=null] - sha16(normalized) for affinity
+ * @param {string|null} [rawKey=null] - raw session/cache key for display
+ * @returns {Promise<string[]>} Rotated models array
  */
-export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
-  if (!models || models.length <= 1 || strategy !== "round-robin") {
+export async function getRotatedModels(models, comboName, strategy, stickyLimit = 1, cacheKeyHash = null, rawKey = null) {
+  if (!models || models.length <= 1) return models;
+  if (strategy === "round-robin-affinity" && cacheKeyHash) {
+    const key = comboName || "__default__";
+    try {
+      const aff = await getComboAffinity(key, cacheKeyHash);
+      if (aff && models.includes(aff.selectedModel)) {
+        await touchComboAffinity(key, cacheKeyHash);
+        const idx = models.indexOf(aff.selectedModel);
+        return rotateModelsFromIndex(models, idx);
+      }
+      const idx = consistentIndex(cacheKeyHash, models.length);
+      const selected = models[idx];
+      await setComboAffinity(key, cacheKeyHash, rawKey || cacheKeyHash, selected);
+      return rotateModelsFromIndex(models, idx);
+    } catch {}
+    const idx = consistentIndex(cacheKeyHash, models.length);
+    return rotateModelsFromIndex(models, idx);
+  }
+  if (strategy !== "round-robin") {
     return models;
   }
 
@@ -270,16 +292,21 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {Object} options
  * @param {Object} options.body - Request body
  * @param {string[]} options.models - Array of model strings to try
- * @param {Function} options.handleSingleModel - Function to handle single model: (body, modelStr) => Promise<Response>
+ * @param {Function} options.handleSingleModel - Function to handle single model: (body, modelStr, streamFailureContext) => Promise<Response>
  * @param {Object} options.log - Logger object
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
  * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
-  // Apply rotation strategy if enabled
-  let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, cacheKeyHash = null, rawKey = null }) {
+  // Apply rotation strategy — affinity branch needs async lookup; others sync
+  let rotatedModels;
+  if (comboStrategy === "round-robin-affinity" && models.length > 1) {
+    rotatedModels = await getRotatedModels(models, comboName, comboStrategy, comboStickyLimit, cacheKeyHash, rawKey);
+  } else {
+    rotatedModels = await getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+  }
 
   // Auto-switch: float models that satisfy the request's required capabilities to the front.
   if (autoSwitch) {
@@ -292,7 +319,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       rotatedModels = reordered;
     }
   }
-  
+
   let lastError = null;
   let earliestRetryAfter = null;
   let lastStatus = null;
@@ -302,11 +329,19 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr);
+      const streamFailureContext = createStreamFailureContext({
+        comboName,
+        cacheKeyHash,
+        rawKey,
+        nextModel: rotatedModels[i + 1] || null,
+        failedModel: modelStr,
+        log,
+      });
+      const result = await handleSingleModel(body, modelStr, streamFailureContext);
       
-      // Success (2xx) - return response
+      // A 2xx response was accepted. Streaming completion is tracked later.
       if (result.ok) {
-        log.info("COMBO", `Model ${modelStr} succeeded`);
+        log.info("COMBO", `Model ${modelStr} accepted`);
         return result;
       }
 
@@ -379,6 +414,16 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     JSON.stringify({ error: { message: msg } }),
     { status, headers: { "Content-Type": "application/json" } }
   );
+}
+
+function createStreamFailureContext({ comboName, cacheKeyHash, rawKey, nextModel, failedModel, log }) {
+  if (!comboName || !cacheKeyHash || !nextModel) return null;
+  return {
+    async onStreamFailure() {
+      await setComboAffinity(comboName, cacheKeyHash, rawKey || cacheKeyHash, nextModel);
+      log?.warn?.("COMBO", `Stream failed for ${failedModel}; affinity moved to ${nextModel}`);
+    },
+  };
 }
 
 /**

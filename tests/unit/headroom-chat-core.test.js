@@ -25,6 +25,17 @@ vi.mock("../../open-sse/utils/requestLogger.js", () => ({
 vi.mock("../../open-sse/utils/stream.js", () => ({
   COLORS: { red: "", reset: "" },
   createPassthroughStreamWithLogger: vi.fn(() => new TransformStream()),
+  createStreamMetrics: vi.fn(() => ({
+    providerChunks: 0,
+    providerBytes: 0,
+    clientChunks: 0,
+    clientBytes: 0,
+    ttftAt: null,
+    upstreamEnded: false,
+    usage: null,
+    toolCalls: [],
+  })),
+  snapshotStreamMetrics: vi.fn(() => null),
 }));
 
 vi.mock("@/lib/usageDb.js", () => ({

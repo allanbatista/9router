@@ -1,75 +1,87 @@
 import { v4 as uuidv4 } from "uuid";
-import { getAdapter } from "../driver.js";
+import { getConnection } from "../connection.js";
+import { ApiKey } from "../models/ApiKey.js";
 
-function rowToKey(row) {
-  if (!row) return null;
+function docToKey(doc) {
+  if (!doc) return null;
   return {
-    id: row.id,
-    key: row.key,
-    name: row.name,
-    machineId: row.machineId,
-    isActive: row.isActive === 1 || row.isActive === true,
-    createdAt: row.createdAt,
+    id: doc._id,
+    key: doc.key,
+    name: doc.name,
+    machineId: doc.machineId,
+    isActive: doc.isActive === true || doc.isActive === 1,
+    createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : (doc.createdAt || new Date().toISOString()),
   };
 }
 
 export async function getApiKeys() {
-  const db = await getAdapter();
-  const rows = db.all(`SELECT * FROM apiKeys ORDER BY createdAt ASC`);
-  return rows.map(rowToKey);
+  await getConnection();
+  const docs = await ApiKey.find({}).sort({ createdAt: 1 }).lean();
+  return docs.map(docToKey);
 }
 
 export async function getApiKeyById(id) {
-  const db = await getAdapter();
-  const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
-  return rowToKey(row);
+  if (!id) return null;
+  await getConnection();
+  const doc = await ApiKey.findById(id).lean();
+  return docToKey(doc);
 }
 
 export async function createApiKey(name, machineId) {
   if (!machineId) throw new Error("machineId is required");
-  const db = await getAdapter();
+  await getConnection();
   const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
   const result = generateApiKeyWithMachine(machineId);
-  const apiKey = {
-    id: uuidv4(),
-    name,
+
+  const apiKeyDoc = {
+    _id: uuidv4(),
+    name: name || null,
     key: result.key,
     machineId,
     isActive: true,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date(),
   };
-  db.run(
-    `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?)`,
-    [apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt]
-  );
-  return apiKey;
+
+  await ApiKey.create(apiKeyDoc);
+  return docToKey(apiKeyDoc);
 }
 
-export async function updateApiKey(id, data) {
-  const db = await getAdapter();
-  let result = null;
-  db.transaction(() => {
-    const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
-    if (!row) return;
-    const merged = { ...rowToKey(row), ...data };
-    db.run(
-      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ? WHERE id = ?`,
-      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, id]
-    );
-    result = merged;
-  });
-  return result;
+export async function updateApiKey(id, data = {}) {
+  if (!id) return null;
+  await getConnection();
+  const existingDoc = await ApiKey.findById(id).lean();
+  if (!existingDoc) return null;
+
+  const existing = docToKey(existingDoc);
+  const merged = { ...existing, ...data };
+
+  await ApiKey.findByIdAndUpdate(
+    id,
+    {
+      $set: {
+        key: merged.key,
+        name: merged.name,
+        machineId: merged.machineId,
+        isActive: merged.isActive !== false,
+      },
+    },
+    { new: true }
+  ).lean();
+
+  return merged;
 }
 
 export async function deleteApiKey(id) {
-  const db = await getAdapter();
-  const res = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);
-  return (res?.changes ?? 0) > 0;
+  if (!id) return false;
+  await getConnection();
+  const res = await ApiKey.deleteOne({ _id: id });
+  return (res.deletedCount || 0) > 0;
 }
 
 export async function validateApiKey(key) {
-  const db = await getAdapter();
-  const row = db.get(`SELECT isActive FROM apiKeys WHERE key = ?`, [key]);
-  if (!row) return false;
-  return row.isActive === 1 || row.isActive === true;
+  if (!key) return false;
+  await getConnection();
+  const doc = await ApiKey.findOne({ key }).lean();
+  if (!doc) return false;
+  return doc.isActive === true || doc.isActive === 1;
 }

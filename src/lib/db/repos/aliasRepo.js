@@ -1,6 +1,6 @@
-import { getAdapter } from "../driver.js";
-import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
+import { getConnection } from "../connection.js";
+import { KvEntry } from "../models/KvEntry.js";
 
 const aliasKv = makeKv("modelAliases");
 const customKv = makeKv("customModels");
@@ -29,19 +29,30 @@ export async function getCustomModels() {
   return Object.values(all);
 }
 
-// Atomic check-then-insert inside transaction to prevent duplicate races
+// Atomic check-then-insert / upsert for custom models to prevent duplicate races
 export async function addCustomModel({ providerAlias, id, type = "llm", name }) {
   const k = customKey(providerAlias, id, type);
-  const db = await getAdapter();
-  let added = false;
-  db.transaction(() => {
-    const row = db.get(`SELECT 1 FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
-    if (row) return;
-    const value = stringifyJson({ providerAlias, id, type, name: name || id });
-    db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, value]);
-    added = true;
-  });
-  return added;
+  await getConnection();
+  const value = { providerAlias, id, type, name: name || id };
+
+  const existing = await KvEntry.findOne({ scope: "customModels", key: k }).lean();
+  if (existing) {
+    return false;
+  }
+
+  try {
+    await KvEntry.create({
+      scope: "customModels",
+      key: k,
+      value,
+      updatedAt: new Date(),
+    });
+    return true;
+  } catch (err) {
+    // E11000 duplicate key error
+    if (err.code === 11000) return false;
+    throw err;
+  }
 }
 
 export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {

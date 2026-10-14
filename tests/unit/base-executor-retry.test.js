@@ -8,6 +8,7 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
 }));
 
 const { BaseExecutor } = await import("../../open-sse/executors/base.js");
+const { createStreamController } = await import("../../open-sse/utils/streamHandler.js");
 
 function res(status) {
   return { status, headers: { get: () => "" } };
@@ -80,6 +81,37 @@ describe("BaseExecutor.execute — network error retry/fallback", () => {
       thrown = e;
     }
     expect(thrown?.message).toBe("boom");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates client cancellation without retrying the upstream request", async () => {
+    const clientAbort = new AbortController();
+    const streamController = createStreamController({
+      provider: "test",
+      model: "m",
+      clientSignal: clientAbort.signal,
+      log: { line: vi.fn(), errorLine: vi.fn() },
+    });
+    const ex = makeExec({ baseUrl: "https://x/api", retry: { 502: { attempts: 3, delayMs: 0 } } });
+    fetchMock.mockImplementation((_url, options) => {
+      if (!options) return Promise.resolve(res(200));
+      return new Promise((_, reject) => {
+        options.signal.addEventListener("abort", () => {
+          reject(new DOMException("This operation was aborted", "AbortError"));
+        }, { once: true });
+      });
+    });
+
+    const pending = ex.execute({
+      model: "m",
+      body: {},
+      stream: true,
+      credentials: creds,
+      signal: streamController.signal,
+    });
+    clientAbort.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

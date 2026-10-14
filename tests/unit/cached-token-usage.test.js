@@ -49,6 +49,16 @@ describe("canonicalizeUsage", () => {
     expect(out.reasoning_tokens).toBe(40);
   });
 
+  it("reads cached tokens from nested prompt details", () => {
+    const out = canonicalizeUsage({
+      prompt_tokens: 190000,
+      completion_tokens: 40,
+      prompt_tokens_details: { cached_tokens: 183323 },
+    });
+    expect(out.prompt_tokens).toBe(190000);
+    expect(out.cached_tokens).toBe(183323);
+  });
+
   it("handles no-cache usage", () => {
     const out = canonicalizeUsage({ prompt_tokens: 100, completion_tokens: 50 });
     expect(out.prompt_tokens).toBe(100);

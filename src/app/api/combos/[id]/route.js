@@ -27,6 +27,7 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
+
     
     // Validate name format if provided
     if (body.name) {

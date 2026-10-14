@@ -1,9 +1,26 @@
 import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/usageDb";
+import { classifyRequest, getRequestSessionIdentity } from "@/shared/utils/requestClassification.js";
+
+function getErrorLabel(detail) {
+  let value = detail?.error ?? detail?.response?.error;
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      value = parsed?.error?.message || parsed?.message || value;
+    } catch {}
+  }
+
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > 180 ? `${normalized.slice(0, 177)}…` : normalized;
+}
 
 /**
  * GET /api/usage/request-details
- * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate
+ * Query parameters: page, pageSize (1-100), provider, model, connectionId, sessionId, status, startDate, endDate, agentMetadata.<key>, agentMetadata[<key>]
  */
 export async function GET(request) {
   try {
@@ -16,13 +33,14 @@ export async function GET(request) {
     const provider = searchParams.get("provider");
     const model = searchParams.get("model");
     const connectionId = searchParams.get("connectionId");
+    const sessionId = searchParams.get("sessionId");
     const status = searchParams.get("status");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
     
     if (page < 1) {
       return NextResponse.json(
-        { error: "Page must be >= 1" },
+        { error: "Page must be greater than or equal to 1" },
         { status: 400 }
       );
     }
@@ -42,10 +60,29 @@ export async function GET(request) {
     if (provider) filter.provider = provider;
     if (model) filter.model = model;
     if (connectionId) filter.connectionId = connectionId;
+    if (sessionId) filter.sessionId = sessionId;
     if (status) filter.status = status;
     if (startDate) filter.startDate = startDate;
     if (endDate) filter.endDate = endDate;
-    
+
+    // Extract metadata filters from query params
+    const agentMetadata = {};
+    for (const [k, v] of searchParams.entries()) {
+      if (k.startsWith("agentMetadata.") && v) {
+        const subKey = k.slice("agentMetadata.".length);
+        agentMetadata[subKey] = v;
+      } else if (k.startsWith("agentMetadata[") && k.endsWith("]") && v) {
+        const subKey = k.slice("agentMetadata[".length, -1);
+        agentMetadata[subKey] = v;
+      } else if (k.startsWith("metadata_") && v) {
+        const subKey = k.slice("metadata_".length);
+        agentMetadata[subKey] = v;
+      }
+    }
+    if (Object.keys(agentMetadata).length > 0) {
+      filter.agentMetadata = agentMetadata;
+    }
+
     const result = await getRequestDetails(filter);
 
     // Redact conversation payloads: the stored details include full request
@@ -54,7 +91,19 @@ export async function GET(request) {
     // disabled, anyone) read every user's conversation history. Keep the
     // metadata (model, tokens, latency, status) but drop message content.
     const redactedDetails = (result.details || []).map((d) => {
-      const redacted = { ...d };
+      const identity = getRequestSessionIdentity(d);
+      const classification = classifyRequest(d);
+      const redacted = {
+        ...d,
+        ...identity,
+        requestType: d.requestType || classification.requestType,
+        agentRequestType: d.agentRequestType || classification.agentRequestType,
+        isToolCall: d.isToolCall ?? classification.isToolCall,
+        toolCallCount: d.toolCallCount ?? classification.toolCallCount,
+        toolCallNames: d.toolCallNames || classification.toolCallNames,
+        toolCalls: classification.toolCalls,
+        errorLabel: getErrorLabel(d),
+      };
       for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
         if (redacted[key] !== undefined) {
           redacted[key] = { redacted: true };
@@ -62,7 +111,6 @@ export async function GET(request) {
       }
       return redacted;
     });
-
     return NextResponse.json({ ...result, details: redactedDetails });
   } catch (error) {
     console.error("[API] Failed to get request details:", error);

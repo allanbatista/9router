@@ -15,8 +15,20 @@ services:
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
       HEADROOM_URL: http://headroom:8787
+      MONGODB_URI: mongodb://mongodb:27017/9router
     depends_on:
       - headroom
+      - mongodb
+
+  mongodb:
+    image: mongo:7.0
+    container_name: 9router-mongo
+    restart: always
+    ports:
+      - "29017:27017"
+    volumes:
+      - 9router-mongo-data:/data/db
+    command: ["mongod", "--bind_ip_all"]
 
   headroom:
     image: ghcr.io/chopratejas/headroom:latest
@@ -28,3 +40,5 @@ services:
 volumes:
   9router-data:
     name: 9router-data
+  9router-mongo-data:
+    name: 9router-mongo-data

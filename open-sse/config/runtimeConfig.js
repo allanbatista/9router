@@ -55,6 +55,17 @@ export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 10
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
+// Antigravity Flash normally answers within seconds. Keep provider-specific
+// limits below the client watchdog so a stalled stream can fail over cleanly.
+export const ANTIGRAVITY_STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("ANTIGRAVITY_STREAM_FIRST_CHUNK_TIMEOUT_MS", 60 * 1000);
+export const ANTIGRAVITY_STREAM_STALL_TIMEOUT_MS = envMs("ANTIGRAVITY_STREAM_STALL_TIMEOUT_MS", 90 * 1000);
+export const ANTIGRAVITY_FETCH_CONNECT_TIMEOUT_MS = envMs("ANTIGRAVITY_FETCH_CONNECT_TIMEOUT_MS", 30 * 1000);
+
+export const STREAM_TIMEOUT_ERROR_CODES = Object.freeze({
+  FIRST_CHUNK: "STREAM_FIRST_CHUNK_TIMEOUT",
+  STALL: "STREAM_STALL_TIMEOUT",
+});
+
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
 

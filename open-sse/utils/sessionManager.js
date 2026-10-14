@@ -145,8 +145,12 @@ function extractClientSessionId(headers, body, scope = "") {
     }
     const requestId = scope === "kiro" ? null : headerValue(headers, "x-client-request-id");
     if (requestId) return requestId;
+    const agentMetadataSession = Array.isArray(body?._agent_metadata)
+        ? body._agent_metadata.find((item) => item?.key === "session-id")?.value
+        : null;
     const fromBody =
         normalizeSessionId(body?.prompt_cache_key) ||
+        normalizeSessionId(agentMetadataSession) ||
         normalizeSessionId(body?.session_id) ||
         normalizeSessionId(body?.conversation_id) ||
         (scope === "kiro" ? null : normalizeSessionId(body?.metadata?.user_id));

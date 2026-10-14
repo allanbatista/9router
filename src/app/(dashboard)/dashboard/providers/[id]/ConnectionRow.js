@@ -117,6 +117,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     : connection.testStatus;
 
   const getStatusVariant = () => getConnectionStatusVariant(connection.isActive, effectiveStatus);
+  const errorDetails = connection.lastErrorRaw || connection.lastError;
 
   const getOneByOneVariant = () => {
     if (!oneByOneStatus) return "default";
@@ -177,7 +178,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
             )}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {connection.lastError && connection.isActive !== false && (
-              <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={connection.lastError}>
+              <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={errorDetails}>
                 {connection.lastError}
               </span>
             )}

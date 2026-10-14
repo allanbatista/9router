@@ -18,6 +18,8 @@ import dynamic from "next/dynamic";
 // Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders
 const ProviderTopology = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/ProviderTopology"), { ssr: false });
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
+import InputTokensChart from "@/app/(dashboard)/dashboard/usage/components/InputTokensChart";
+import ToolCallMetrics from "@/app/(dashboard)/dashboard/usage/components/ToolCallMetrics";
 
 function timeAgo(timestamp) {
   const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
@@ -56,7 +58,7 @@ function RecentRequests({ requests = [] }) {
               <tr className="border-b border-border">
                 <th className="py-1.5 text-left font-semibold text-text-muted w-2"></th>
                 <th className="py-1.5 text-left font-semibold text-text-muted">Model</th>
-                <th className="py-1.5 text-right font-semibold text-text-muted whitespace-nowrap">In / Out</th>
+                <th className="py-1.5 text-right font-semibold text-text-muted whitespace-nowrap">In / Out / Cached</th>
                 <th className="py-1.5 text-right font-semibold text-text-muted">When</th>
               </tr>
             </thead>
@@ -68,11 +70,17 @@ function RecentRequests({ requests = [] }) {
                     <td className="py-1.5">
                       <span className={`block w-1.5 h-1.5 rounded-full ${ok ? "bg-success" : "bg-error"}`} />
                     </td>
-                    <td className="py-1.5 font-mono truncate max-w-[120px]" title={r.model}>{r.model}</td>
+                    <td className="py-1.5 max-w-[150px] leading-tight" title={`${r.provider || ""} / ${r.model} / ${r.accountName || r.connectionId || ""}`}>
+                      {r.provider ? <div className="truncate font-mono text-[10px] leading-none text-text-muted">{r.provider}</div> : null}
+                      <div className="truncate font-mono text-xs text-text-main">{r.model}</div>
+                      {r.accountName ? <div className="truncate font-mono text-[10px] leading-none text-text-muted">{r.accountName}</div> : null}
+                    </td>
                     <td className="py-1.5 text-right whitespace-nowrap">
                       <span className="text-primary">{fmt(r.promptTokens)}↑</span>
                       {" "}
                       <span className="text-success">{fmt(r.completionTokens)}↓</span>
+                      {" "}
+                      <span className="text-info">{fmt(r.cachedTokens)}↻</span>
                     </td>
                     <td className="py-1.5 text-right text-text-muted whitespace-nowrap"><TimeAgo timestamp={r.timestamp} /></td>
                   </tr>
@@ -119,6 +127,7 @@ function getGroupKey(item, keyField) {
     case "accountName": return item.accountName || `Account ${item.connectionId?.slice(0, 8)}...` || "Unknown Account";
     case "keyName": return item.keyName || "Unknown Key";
     case "endpoint": return item.endpoint || "Unknown Endpoint";
+    case "rawValue": return item.rawValue || "Unknown Value";
     default: return item[keyField] || "Unknown";
   }
 }
@@ -184,8 +193,13 @@ const ENDPOINT_COLUMNS = [
   { field: "requests", label: "Requests", align: "right" },
   { field: "lastUsed", label: "Last Used", align: "right" },
 ];
+const METADATA_COLUMNS = [
+  { field: "rawValue", label: "Value" },
+  { field: "requests", label: "Requests", align: "right" },
+  { field: "lastUsed", label: "Last Used", align: "right" },
+];
 
-const TABLE_OPTIONS = [
+const BASE_TABLE_OPTIONS = [
   { value: "model", label: "Usage by Model" },
   { value: "account", label: "Usage by Account" },
   { value: "apiKey", label: "Usage by API Key" },
@@ -213,12 +227,23 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const [tableView, setTableView] = useState("model");
   const [viewMode, setViewMode] = useState("costs");
   const [providers, setProviders] = useState([]);
-  const [periodLocal, setPeriodLocal] = useState("today");
+  const [periodLocal, setPeriodLocal] = useState("24h");
+  const [metadataKeys, setMetadataKeys] = useState(["os", "hostname", "agent-name"]);
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
   const period = periodProp ?? periodLocal;
   const setPeriod = setPeriodProp ?? setPeriodLocal;
 
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.agentMetadataKeys && Array.isArray(data.agentMetadataKeys)) {
+          setMetadataKeys(data.agentMetadataKeys);
+        }
+      })
+      .catch(() => {});
+  }, []);
   // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
   useEffect(() => {
@@ -316,9 +341,47 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     router.replace(`?${params.toString()}`, { scroll: false });
   }, [searchParams, router]);
 
+  // Combined table options including metadata dimensions
+  const tableOptions = useMemo(() => {
+    const options = [...BASE_TABLE_OPTIONS];
+    const activeDims = new Set(metadataKeys);
+    if (stats?.byAgentMetadata) {
+      Object.keys(stats.byAgentMetadata).forEach((k) => activeDims.add(k));
+    }
+    activeDims.forEach((dim) => {
+      const label = `Usage by ${dim.charAt(0).toUpperCase() + dim.slice(1).replace(/-/g, " ")}`;
+      options.push({ value: `meta:${dim}`, label });
+    });
+    return options;
+  }, [metadataKeys, stats?.byAgentMetadata]);
+
   // Compute active table data
   const activeTableConfig = useMemo(() => {
     if (!stats) return null;
+    if (tableView.startsWith("meta:")) {
+      const dimKey = tableView.slice("meta:".length);
+      const dimData = stats.byAgentMetadata?.[dimKey] || {};
+      return {
+        columns: METADATA_COLUMNS,
+        groupedData: groupDataByKey(sortData(dimData, {}, sortBy, sortOrder), "rawValue"),
+        storageKey: `usage-stats:expanded-meta-${dimKey}`,
+        emptyMessage: `No usage recorded for metadata dimension '${dimKey}' in the selected period.`,
+        renderSummaryCells: (group) => (
+          <>
+            <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
+            <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+          </>
+        ),
+        renderDetailCells: (item) => (
+          <>
+            <td className="px-6 py-3 font-medium font-mono text-sm">{item.rawValue}</td>
+            <td className="px-6 py-3 text-right">{fmt(item.requests)}</td>
+            <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(item.lastUsed)}</td>
+          </>
+        ),
+      };
+    }
+
     switch (tableView) {
       case "model": {
         const pendingMap = stats.pending?.byModel || {};
@@ -467,9 +530,11 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       {/* Overview cards */}
       {loading ? spinner : <OverviewCards stats={stats} />}
 
-      {/* Provider topology + Recent Requests */}
+      {/* Unified Multi-Metric Chart: Stacked Bars (Uncached + Cached) + Line/Area Curves (Tokens & Cost) */}
+      {loading ? spinner : <UsageChart period={period} />}
+      {/* Realtime Gateway Topology & Recent Activity Stream */}
       {loading ? spinner : (
-        <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+        <div className="grid min-w-0 grid-cols-1 items-stretch gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
           <ProviderTopology
             providers={providers}
             activeRequests={stats.activeRequests || []}
@@ -480,37 +545,45 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         </div>
       )}
 
-      {/* Token / Cost chart - sync period */}
-      {loading ? spinner : <UsageChart period={period} />}
-
-      {/* Table with dropdown selector */}
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <select
-            value={tableView}
-            onChange={(e) => setTableView(e.target.value)}
-            className="w-full rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-main focus:outline-none focus:ring-2 focus:ring-primary/50 sm:w-auto"
-            style={{ colorScheme: 'auto' }}
-          >
-            {TABLE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-          <div className="grid grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex">
-            <button
-              onClick={() => setViewMode("costs")}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
+      {/* Detailed Analytics Breakdown Table */}
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between p-4 rounded-xl bg-surface border border-border/80 shadow-sm">
+          <div className="flex items-center gap-3">
+            <span className="material-symbols-outlined text-[20px] text-text-muted">analytics</span>
+            <div className="flex flex-col">
+              <span className="text-sm font-semibold text-text-main">Analytics Breakdown</span>
+              <span className="text-xs text-text-muted">Group tokens and cost by model, account, key, or agent dimensions</span>
+            </div>
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={tableView}
+              onChange={(e) => setTableView(e.target.value)}
+              className="rounded-lg border border-border bg-bg px-3 py-1.5 text-xs font-semibold text-text-main focus:outline-none focus:ring-2 focus:ring-primary/40 cursor-pointer"
+              style={{ colorScheme: 'auto' }}
             >
-              Costs
-            </button>
-            <button
-              onClick={() => setViewMode("tokens")}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
-            >
-              Tokens
-            </button>
+              {tableOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <div className="flex items-center p-0.5 rounded-lg border border-border bg-bg">
+              <button
+                onClick={() => setViewMode("costs")}
+                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text-main"}`}
+              >
+                Costs ($)
+              </button>
+              <button
+                onClick={() => setViewMode("tokens")}
+                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text-main"}`}
+              >
+                Tokens
+              </button>
+            </div>
           </div>
         </div>
+
         {loading ? spinner : activeTableConfig && (
           <UsageTable
             title=""
@@ -528,6 +601,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           />
         )}
       </div>
+      {loading ? spinner : <ToolCallMetrics stats={stats} />}
     </div>
   );
 }

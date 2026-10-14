@@ -42,6 +42,30 @@ export async function PATCH(request) {
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];
 
+    // Validate agentMetadataKeys if present
+    if (Object.prototype.hasOwnProperty.call(body, "agentMetadataKeys")) {
+      if (!Array.isArray(body.agentMetadataKeys)) {
+        return NextResponse.json(
+          { error: "agentMetadataKeys must be an array of strings" },
+          { status: 400 }
+        );
+      }
+      const validKeyRegex = /^[a-zA-Z0-9_-]+$/;
+      const cleanedKeys = [];
+      for (const k of body.agentMetadataKeys) {
+        if (typeof k !== "string" || !k.trim() || !validKeyRegex.test(k.trim())) {
+          return NextResponse.json(
+            { error: `Invalid metadata key name: "${k}". Allowed: letters, numbers, hyphens, underscores.` },
+            { status: 400 }
+          );
+        }
+        if (!cleanedKeys.includes(k.trim())) {
+          cleanedKeys.push(k.trim());
+        }
+      }
+      body.agentMetadataKeys = cleanedKeys;
+    }
+
     // If updating password, hash it
     if (body.newPassword) {
       const settings = await getSettings();

@@ -1,3 +1,10 @@
+import {
+  isModelInCooldown,
+  markModelInCooldown,
+  clearModelCooldown,
+  getModelFallbackChain,
+  DEFAULT_MODEL_COOLDOWN_MS,
+} from "open-sse/services/modelFallback.js";
 import "open-sse/index.js";
 
 import {
@@ -8,7 +15,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
-import { getModelInfo, getComboModels } from "../services/model.js";
+import { getModelInfo, getComboConfig, parseModel } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
@@ -17,18 +24,64 @@ import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, STREAM_TIMEOUT_ERROR_CODES } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import { resolveSessionIdentity } from "open-sse/utils/sessionManager.js";
+import { normalizeCacheKey, hashCacheKey } from "@/lib/db/repos/sessionAffinityRepo.js";
 
+function deriveAffinityParams(provider, model, body, request, clientRawRequest) {
+  const rawHeaders = request?.headers ? Object.fromEntries(request.headers.entries()) : (clientRawRequest?.headers || {});
+  const lowerHeaders = {};
+  for (const [k, v] of Object.entries(rawHeaders)) lowerHeaders[k.toLowerCase()] = v;
+  // provider is scope for sessionManager — for combo use comboName as scope so same omp-* maps consistently per combo
+  const ident = resolveSessionIdentity({ headers: lowerHeaders, body, scope: provider });
+  if (!ident?.sessionId || ident.ephemeral) return { cacheKeyHash: null, rawKey: null };
+  const normalized = normalizeCacheKey(ident.sessionId, provider);
+  if (!normalized) return { cacheKeyHash: null, rawKey: null };
+  const hash = hashCacheKey(normalized);
+  return { cacheKeyHash: hash, rawKey: ident.sessionId };
+}
+function deriveComboAffinity(providerOrCombo, body, request, clientRawRequest) {
+  const rawHeaders = request?.headers ? Object.fromEntries(request.headers.entries()) : (clientRawRequest?.headers || {});
+  const lowerHeaders = {};
+  for (const [k, v] of Object.entries(rawHeaders)) lowerHeaders[k.toLowerCase()] = v;
+  const ident = resolveSessionIdentity({ headers: lowerHeaders, body, scope: providerOrCombo });
+  if (!ident?.sessionId || ident.ephemeral) return { cacheKeyHash: null, rawKey: null };
+  // combo affinity always normalized as raw (no toNumeric) — combo spans providers
+  const hash = hashCacheKey(ident.sessionId.trim());
+  return { cacheKeyHash: hash, rawKey: ident.sessionId };
+}
+
+const STREAM_TIMEOUT_CODES = new Set(Object.values(STREAM_TIMEOUT_ERROR_CODES));
+
+function isStreamTimeout(error) {
+  return STREAM_TIMEOUT_CODES.has(error?.code);
+}
+
+function getCooldownIdentity(modelStr) {
+  const parsed = parseModel(modelStr);
+  if (parsed.provider) return { provider: parsed.provider, model: parsed.model };
+  if (parsed.model?.startsWith("gemini-")) return { provider: "antigravity", model: parsed.model };
+  if (parsed.model?.startsWith("claude-")) return { provider: "anthropic", model: parsed.model };
+  return { provider: "openai", model: parsed.model };
+}
+
+function excludeCoolingModels(models) {
+  const available = models.filter((modelStr) => {
+    const { provider, model } = getCooldownIdentity(modelStr);
+    return !isModelInCooldown(provider, model);
+  });
+  return available.length > 0 ? available : models;
+}
 /**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
  * Format detection and translation handled by translator
  */
-export async function handleChat(request, clientRawRequest = null) {
+export async function handleChat(request, clientRawRequest = null, options = {}) {
   let body;
   try {
     body = await request.json();
@@ -42,7 +95,7 @@ export async function handleChat(request, clientRawRequest = null) {
     const url = new URL(request.url);
     clientRawRequest = {
       endpoint: url.pathname,
-      body,
+      body: typeof structuredClone === "function" ? structuredClone(body) : JSON.parse(JSON.stringify(body)),
       headers: Object.fromEntries(request.headers.entries())
     };
   }
@@ -60,9 +113,10 @@ export async function handleChat(request, clientRawRequest = null) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
-  // Enforce API key if enabled in settings
+  // Enforce API key if enabled in settings (bypassed for internal dashboard sessions)
+  const isDashboardSession = options?.isDashboardSession === true || clientRawRequest?.isDashboardSession === true;
   const settings = await getSettings();
-  if (settings.requireApiKey) {
+  if (settings.requireApiKey && !isDashboardSession) {
     if (!apiKey) {
       log.warn("AUTH", "Missing API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
@@ -87,19 +141,19 @@ export async function handleChat(request, clientRawRequest = null) {
   const requiredCapabilities = detectRequiredCapabilities(body);
 
   // Check if model is a combo (has multiple models with fallback)
-  const comboModels = await getComboModels(modelStr);
+  const comboConfig = await getComboConfig(modelStr);
+  const comboModels = comboConfig?.models?.length > 0 ? comboConfig.models : null;
   if (comboModels) {
+    const comboBody = body;
+    const normalizedComboName = modelStr.startsWith("combo:") ? modelStr.slice(6) : modelStr;
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies = settings.comboStrategies || {};
-    const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
+    const comboSpecificStrategy = comboStrategies[normalizedComboName]?.fallbackStrategy || comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
-    const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
-    const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
-
     if (comboStrategy === "fusion") {
-      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
+      log.info("CHAT", `Combo "${normalizedComboName}" with ${comboModels.length} models (strategy: fusion)`);
       return handleFusionChat({
-        body,
+        body: comboBody,
         models: comboModels,
         handleSingleModel: (b, m, isPanel) => {
           let cleanRawReq = clientRawRequest;
@@ -110,26 +164,56 @@ export async function handleChat(request, clientRawRequest = null) {
           return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
         },
         log,
-        comboName: modelStr,
-        judgeModel: comboStrategies[modelStr]?.judgeModel,
-        tuning: comboStrategies[modelStr]?.fusionTuning,
+        comboName: normalizedComboName,
+        judgeModel: comboStrategies[normalizedComboName]?.judgeModel || comboStrategies[modelStr]?.judgeModel,
+        tuning: comboStrategies[normalizedComboName]?.fusionTuning || comboStrategies[modelStr]?.fusionTuning,
       });
     }
 
+    const availableComboModels = excludeCoolingModels(comboModels);
+    const augmentedModels = augmentModelsWithCapacityAdapter(availableComboModels, requiredCapabilities, settings);
+    const adapterAdded = augmentedModels.filter((m) => !availableComboModels.includes(m));
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+    const comboAff = comboStrategy === "round-robin-affinity" ? deriveComboAffinity(normalizedComboName, body, request, clientRawRequest) : { cacheKeyHash: null, rawKey: null };
+    log.info("CHAT", `Combo "${normalizedComboName}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
       body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m, streamFailureContext) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, streamFailureContext),
         adapterAdded
       ),
       log,
-      comboName: modelStr,
+      comboName: normalizedComboName,
       comboStrategy,
-      comboStickyLimit
+      comboStickyLimit,
+      cacheKeyHash: comboAff.cacheKeyHash,
+      rawKey: comboAff.rawKey
     });
+  }
+  // Automatic Model Degradation / Fallback Chain if enabled (or if model is in cooldown)
+  if (settings.autoModelFallback !== false) {
+    const chain = getModelFallbackChain(modelStr);
+    if (chain.length > 1) {
+      // Filter out models that are currently in 1h cooldown cache
+      const targetChain = excludeCoolingModels(chain);
+      if (targetChain.length > 1) {
+        const augmentedChain = augmentModelsWithCapacityAdapter(targetChain, requiredCapabilities, settings);
+        const adapterAdded = augmentedChain.filter((m) => !targetChain.includes(m));
+        log.info("CHAT", `Auto model fallback chain for "${modelStr}" → [${augmentedChain.join(", ")}]`);
+        return handleComboChat({
+          body,
+          models: augmentedChain,
+          handleSingleModel: withCapacityAdapterStripping(
+            (b, m, streamFailureContext) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, streamFailureContext),
+            adapterAdded
+          ),
+          log,
+          comboName: modelStr,
+          comboStrategy: "fallback"
+        });
+      }
+    }
   }
 
   // Single model request — may still switch to a capacity-adapter model if the
@@ -142,7 +226,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: soloAugmented,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m, streamFailureContext) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, streamFailureContext),
         adapterAdded
       ),
       log,
@@ -157,26 +241,29 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, streamFailureContext = null) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
-    const comboModels = await getComboModels(modelStr);
+    const comboConfig = await getComboConfig(modelStr);
+    const comboModels = comboConfig?.models?.length > 0 ? comboConfig.models : null;
     if (comboModels) {
+      const comboBody = body;
+      const normalizedComboName = modelStr.startsWith("combo:") ? modelStr.slice(6) : modelStr;
       const chatSettings = await getSettings();
       // Check for combo-specific strategy first, fallback to global
       const comboStrategies = chatSettings.comboStrategies || {};
-      const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
+      const comboSpecificStrategy = comboStrategies[normalizedComboName]?.fallbackStrategy || comboStrategies[modelStr]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
       const requiredCapabilities = detectRequiredCapabilities(body);
       const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, chatSettings);
       const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
       if (comboStrategy === "fusion") {
-        log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
+        log.info("CHAT", `Combo "${normalizedComboName}" with ${comboModels.length} models (strategy: fusion)`);
         return handleFusionChat({
-          body,
+          body: comboBody,
           models: comboModels,
           handleSingleModel: (b, m, isPanel) => {
             let cleanRawReq = clientRawRequest;
@@ -187,23 +274,23 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
             return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
           },
           log,
-          comboName: modelStr,
-          judgeModel: comboStrategies[modelStr]?.judgeModel,
-          tuning: comboStrategies[modelStr]?.fusionTuning,
+          comboName: normalizedComboName,
+          judgeModel: comboStrategies[normalizedComboName]?.judgeModel || comboStrategies[modelStr]?.judgeModel,
+          tuning: comboStrategies[normalizedComboName]?.fusionTuning || comboStrategies[modelStr]?.fusionTuning,
         });
       }
 
       const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
-      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      log.info("CHAT", `Combo "${normalizedComboName}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
       return handleComboChat({
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          (b, m, nextStreamFailureContext) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, nextStreamFailureContext),
           adapterAdded
         ),
         log,
-        comboName: modelStr,
+        comboName: normalizedComboName,
         comboStrategy,
         comboStickyLimit
       });
@@ -225,10 +312,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
-
-    // All accounts unavailable
+    const affinity = deriveAffinityParams(provider, model, body, request, clientRawRequest);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { cacheKeyHash: affinity.cacheKeyHash, rawKey: affinity.rawKey });
     if (!credentials || credentials.allRateLimited) {
+      const chatSettings = await getSettings();
+      const cooldownDuration = chatSettings.modelCooldownMs || DEFAULT_MODEL_COOLDOWN_MS;
+      // If all accounts failed/locked for this model, put model in 1h global cooldown
+      markModelInCooldown(provider, model, cooldownDuration);
+      log.warn("CHAT", `All accounts unavailable for [${provider}/${model}] → marked model in cooldown (${Math.round(cooldownDuration / 60000)}m)`);
+
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
@@ -242,7 +334,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       log.warn("CHAT", "No more accounts available", { provider });
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
-
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
@@ -265,6 +356,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       credentials: refreshedCredentials,
       log,
       clientRawRequest,
+      clientSignal: request?.signal,
       connectionId: credentials.connectionId,
       userAgent,
       apiKey,
@@ -294,7 +386,20 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         });
       },
       onRequestSuccess: async () => {
+        clearModelCooldown(provider, model);
         await clearAccountError(credentials.connectionId, credentials, model);
+      },
+      onStreamFailure: async (error) => {
+        if (!isStreamTimeout(error)) return;
+        const { shouldFallback } = await markAccountUnavailable(
+          credentials.connectionId,
+          HTTP_STATUS.GATEWAY_TIMEOUT,
+          error.message,
+          provider,
+          model,
+        );
+        if (!shouldFallback) return;
+        await streamFailureContext?.onStreamFailure?.(error);
       }
     });
 

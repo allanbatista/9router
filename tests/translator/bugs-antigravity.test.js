@@ -82,6 +82,38 @@ describe("Antigravity → Claude", () => {
 });
 
 describe("Antigravity executor", () => {
+  it("drops contents emptied after stripping thought-only parts", () => {
+    const out = new AntigravityExecutor().transformRequest("gemini-3.7-flash-high", {
+      request: {
+        contents: [
+          {
+            role: "model",
+            parts: [
+              { thought: true, text: "internal reasoning" },
+              { thoughtSignature: "sig", text: "" },
+            ],
+          },
+          {
+            role: "model",
+            parts: [
+              { thought: true, text: "reasoning before a tool call" },
+              { thoughtSignature: "sig", text: "" },
+              { functionCall: { id: "call-1", name: "lookup", args: {} } },
+            ],
+          },
+          { role: "user", parts: [{ text: "continue" }] },
+        ],
+      },
+    }, true, { projectId: "project-1", connectionId: "conn-1" });
+
+    expect(out.request.contents.every((content) => content.parts.length > 0)).toBe(true);
+    expect(out.request.contents).toHaveLength(2);
+    expect(out.request.contents[0].parts[0]).toMatchObject({
+      functionCall: { id: "call-1", name: "lookup", args: {} },
+      thoughtSignature: expect.any(String),
+    });
+  });
+
   it("strips optional from nested tool schemas", () => {
     const out = new AntigravityExecutor().transformRequest("gemini-2.5-pro", {
       request: {

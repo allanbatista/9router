@@ -1,5 +1,5 @@
-import { getAdapter } from "../driver.js";
-import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { getConnection } from "../connection.js";
+import { KvEntry } from "../models/KvEntry.js";
 import { makeKv } from "../helpers/kvStore.js";
 
 const pricingKv = makeKv("pricing");
@@ -56,47 +56,50 @@ export async function getPricingForModel(provider, model) {
   return resolveConst(provider, model);
 }
 
-// Atomic merge inside transaction (per-provider read-modify-write)
+// Atomic per-provider update/merge
 export async function updatePricing(pricingData) {
-  const db = await getAdapter();
-  db.transaction(() => {
-    for (const [provider, models] of Object.entries(pricingData)) {
-      const row = db.get(`SELECT value FROM kv WHERE scope = 'pricing' AND key = ?`, [provider]);
-      const current = row ? (parseJson(row.value, {}) || {}) : {};
-      const merged = { ...current };
-      for (const [model, pricing] of Object.entries(models)) {
-        merged[model] = pricing;
-      }
-      db.run(
-        `INSERT INTO kv(scope, key, value) VALUES('pricing', ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
-        [provider, stringifyJson(merged)]
-      );
+  if (!pricingData || typeof pricingData !== "object") return await getUserPricing();
+  await getConnection();
+
+  for (const [provider, models] of Object.entries(pricingData)) {
+    const existing = await KvEntry.findOne({ scope: "pricing", key: provider }).lean();
+    const current = existing?.value && typeof existing.value === "object" ? { ...existing.value } : {};
+    const merged = { ...current };
+    for (const [model, pricing] of Object.entries(models || {})) {
+      merged[model] = pricing;
     }
-  });
+    await KvEntry.findOneAndUpdate(
+      { scope: "pricing", key: provider },
+      { $set: { value: merged, updatedAt: new Date() } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+  }
+
   invalidate();
   return await getUserPricing();
 }
 
 export async function resetPricing(provider, model) {
   if (!provider) return await getUserPricing();
-  const db = await getAdapter();
-  db.transaction(() => {
-    if (!model) {
-      db.run(`DELETE FROM kv WHERE scope = 'pricing' AND key = ?`, [provider]);
-      return;
-    }
-    const row = db.get(`SELECT value FROM kv WHERE scope = 'pricing' AND key = ?`, [provider]);
-    const current = row ? (parseJson(row.value, {}) || {}) : {};
+  await getConnection();
+
+  if (!model) {
+    await KvEntry.deleteOne({ scope: "pricing", key: provider });
+  } else {
+    const existing = await KvEntry.findOne({ scope: "pricing", key: provider }).lean();
+    const current = existing?.value && typeof existing.value === "object" ? { ...existing.value } : {};
     delete current[model];
     if (Object.keys(current).length === 0) {
-      db.run(`DELETE FROM kv WHERE scope = 'pricing' AND key = ?`, [provider]);
+      await KvEntry.deleteOne({ scope: "pricing", key: provider });
     } else {
-      db.run(
-        `INSERT INTO kv(scope, key, value) VALUES('pricing', ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
-        [provider, stringifyJson(current)]
+      await KvEntry.findOneAndUpdate(
+        { scope: "pricing", key: provider },
+        { $set: { value: current, updatedAt: new Date() } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
       );
     }
-  });
+  }
+
   invalidate();
   return await getUserPricing();
 }

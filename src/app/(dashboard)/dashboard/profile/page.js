@@ -321,6 +321,31 @@ export default function ProfilePage() {
       console.error("Failed to update combo sticky limit:", err);
     }
   };
+  const updateAutoModelFallback = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoModelFallback: enabled }),
+      });
+      if (res.ok) {
+        setSettings(prev => ({ ...prev, autoModelFallback: enabled }));
+      }
+    } catch (err) {
+      console.error("Failed to update auto model fallback:", err);
+    }
+  };
+
+  const clearModelCooldowns = async () => {
+    try {
+      const res = await fetch("/api/models", { method: "DELETE" });
+      if (res.ok) {
+        alert("Model cooldown cache cleared successfully.");
+      }
+    } catch (err) {
+      console.error("Failed to clear cooldowns:", err);
+    }
+  };
 
   const updateRequireLogin = async (requireLogin) => {
     try {
@@ -642,6 +667,100 @@ export default function ProfilePage() {
       console.error("Failed to update enableObservability:", err);
     }
   };
+  const [newMetaKey, setNewMetaKey] = useState("");
+  const [metaKeyLoading, setMetaKeyLoading] = useState(false);
+  const [metaKeyStatus, setMetaKeyStatus] = useState({ type: "", message: "" });
+
+  const handleAddMetaKey = async (e) => {
+    if (e) e.preventDefault();
+    const key = newMetaKey.trim().toLowerCase();
+    if (!key) {
+      setMetaKeyStatus({ type: "error", message: "Key cannot be empty" });
+      return;
+    }
+    const validKeyRegex = /^[a-zA-Z0-9_-]+$/;
+    if (!validKeyRegex.test(key)) {
+      setMetaKeyStatus({ type: "error", message: "Invalid characters. Use only letters, numbers, hyphens, and underscores." });
+      return;
+    }
+    const currentKeys = settings.agentMetadataKeys || ["os", "hostname", "agent-name"];
+    if (currentKeys.includes(key)) {
+      setMetaKeyStatus({ type: "error", message: `Key '${key}' already exists.` });
+      return;
+    }
+    const updatedKeys = [...currentKeys, key];
+    setMetaKeyLoading(true);
+    setMetaKeyStatus({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentMetadataKeys: updatedKeys }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSettings((prev) => ({ ...prev, ...data }));
+        setNewMetaKey("");
+        setMetaKeyStatus({ type: "success", message: "Metadata key added." });
+      } else {
+        setMetaKeyStatus({ type: "error", message: data.error || "Failed to add metadata key." });
+      }
+    } catch {
+      setMetaKeyStatus({ type: "error", message: "Network error saving metadata key." });
+    } finally {
+      setMetaKeyLoading(false);
+    }
+  };
+
+  const handleRemoveMetaKey = async (keyToRemove) => {
+    const currentKeys = settings.agentMetadataKeys || ["os", "hostname", "agent-name"];
+    const updatedKeys = currentKeys.filter((k) => k !== keyToRemove);
+    setMetaKeyLoading(true);
+    setMetaKeyStatus({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentMetadataKeys: updatedKeys }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSettings((prev) => ({ ...prev, ...data }));
+        setMetaKeyStatus({ type: "success", message: `Key '${keyToRemove}' removed.` });
+      } else {
+        setMetaKeyStatus({ type: "error", message: data.error || "Failed to remove metadata key." });
+      }
+    } catch {
+      setMetaKeyStatus({ type: "error", message: "Network error removing metadata key." });
+    } finally {
+      setMetaKeyLoading(false);
+    }
+  };
+
+  const handleResetMetaKeys = async () => {
+    const defaultKeys = ["os", "hostname", "agent-name"];
+    setMetaKeyLoading(true);
+    setMetaKeyStatus({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentMetadataKeys: defaultKeys }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSettings((prev) => ({ ...prev, ...data }));
+        setMetaKeyStatus({ type: "success", message: "Metadata keys reset to defaults." });
+      } else {
+        setMetaKeyStatus({ type: "error", message: data.error || "Failed to reset metadata keys." });
+      }
+    } catch {
+      setMetaKeyStatus({ type: "error", message: "Network error resetting metadata keys." });
+    } finally {
+      setMetaKeyLoading(false);
+    }
+  };
+
 
   const reloadSettings = async () => {
     try {
@@ -796,8 +915,8 @@ export default function ProfilePage() {
           <div className="flex flex-col gap-3 pt-4 border-t border-border">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 rounded-lg bg-bg border border-border gap-2">
               <div>
-                <p className="font-medium text-sm sm:text-base">Database Location</p>
-                <p className="text-xs sm:text-sm text-text-muted font-mono break-all">~/.9router/db/data.sqlite</p>
+                <p className="font-medium text-sm sm:text-base">Database Provider</p>
+                <p className="text-xs sm:text-sm text-text-muted font-mono break-all">MongoDB (Mongoose ODM)</p>
               </div>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
@@ -1448,11 +1567,25 @@ export default function ProfilePage() {
               <Toggle
                 checked={settings.fallbackStrategy === "round-robin"}
                 onChange={() => updateFallbackStrategy(settings.fallbackStrategy === "round-robin" ? "fill-first" : "round-robin")}
+                disabled={loading || settings.fallbackStrategy === "round-robin-affinity"}
+              />
+            </div>
+
+            <div className="flex items-start sm:items-center justify-between gap-4 pt-3 border-t border-border/50">
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm sm:text-base">Round Robin — Affinity <span className="text-xs font-normal text-text-muted">(cache-aware)</span></p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  Sticky per session/cache key, per model (30m TTL). Keeps same session on same account to maximize prompt cache hits; repins if account gets rate-limited.
+                </p>
+              </div>
+              <Toggle
+                checked={settings.fallbackStrategy === "round-robin-affinity"}
+                onChange={() => updateFallbackStrategy(settings.fallbackStrategy === "round-robin-affinity" ? "fill-first" : "round-robin-affinity")}
                 disabled={loading}
               />
             </div>
 
-            {/* Sticky Round Robin Limit */}
+            {/* Sticky Round Robin Limit — only for plain round-robin */}
             {settings.fallbackStrategy === "round-robin" && (
               <div className="flex items-start sm:items-center justify-between gap-4 pt-2 border-t border-border/50">
                 <div className="flex-1 min-w-0">
@@ -1473,22 +1606,28 @@ export default function ProfilePage() {
               </div>
             )}
 
-            {/* Combo Round Robin */}
-            <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base">Combo Round Robin</p>
-                <p className="text-xs sm:text-sm text-text-muted">
-                  Cycle through providers in combos instead of always starting with first
-                </p>
+            {/* Combo Strategy — 4 opts like provider */}
+            <div className="flex flex-col gap-2 pt-4 border-t border-border/50">
+              <div className="flex items-start sm:items-center justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-sm sm:text-base">Combo Strategy</p>
+                  <p className="text-xs sm:text-sm text-text-muted">How combos pick the next model — fallback, rotate or cache-aware affinity</p>
+                </div>
+                <select
+                  value={settings.comboStrategy || "fallback"}
+                  onChange={(e) => updateComboStrategy(e.target.value)}
+                  disabled={loading}
+                  className="px-2 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
+                >
+                  <option value="fallback">Fallback — try in order</option>
+                  <option value="round-robin">Round Robin — rotate</option>
+                  <option value="round-robin-affinity">Affinity — sticky per session (30m)</option>
+                  <option value="fusion">Fusion — panel + judge</option>
+                </select>
               </div>
-              <Toggle
-                checked={settings.comboStrategy === "round-robin"}
-                onChange={() => updateComboStrategy(settings.comboStrategy === "round-robin" ? "fallback" : "round-robin")}
-                disabled={loading}
-              />
             </div>
 
-            {/* Combo Sticky Round Robin Limit */}
+            {/* Combo Sticky Round Robin Limit — only plain round-robin */}
             {settings.comboStrategy === "round-robin" && (
               <div className="flex items-center justify-between pt-2 border-t border-border/50">
                 <div>
@@ -1509,8 +1648,41 @@ export default function ProfilePage() {
               </div>
             )}
 
+            {/* Auto Model Version Degradation Fallback */}
+            <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm sm:text-base">Auto Model Version Degradation (Fallback)</p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  Automatically fallback to prior model version if latest version is unavailable on all accounts (e.g. Gemini 3.8 → 3.7). Uses a 1-hour unavailability cache.
+                </p>
+              </div>
+              <Toggle
+                checked={settings.autoModelFallback !== false}
+                onChange={() => updateAutoModelFallback(!(settings.autoModelFallback !== false))}
+                disabled={loading}
+              />
+            </div>
+
+            {/* Reset Model Cooldown Cache */}
+            <div className="flex items-center justify-between pt-2 border-t border-border/50">
+              <div>
+                <p className="font-medium text-sm">Model Cooldown Cache</p>
+                <p className="text-xs text-text-muted">Clear cached 1h model unavailability to retry earlier versions immediately</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={clearModelCooldowns}
+                disabled={loading}
+                className="text-xs"
+              >
+                Clear Cooldowns
+              </Button>
+            </div>
             <p className="text-xs text-text-muted italic pt-2 border-t border-border/50">
-              {settings.fallbackStrategy === "round-robin"
+              {settings.fallbackStrategy === "round-robin-affinity"
+                ? "Affinity: same session/cache key stays on same account per model (30m TTL). Maximizes cache hits; blocked sessions auto-repin."
+                : settings.fallbackStrategy === "round-robin"
                 ? `Currently distributing requests across all available accounts with ${settings.stickyRoundRobinLimit || 3} calls per account.`
                 : "Currently using accounts in priority order (Fill First)."}
               {settings.comboStrategy === "round-robin"
@@ -1612,6 +1784,82 @@ export default function ProfilePage() {
               onChange={updateObservabilityEnabled}
               disabled={loading}
             />
+          </div>
+
+          <div className="mt-6 pt-6 border-t border-black/5 dark:border-white/5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium text-sm sm:text-base">Indexed Metadata Keys</p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  Request attributes from <code className="font-mono text-xs">_agent_metadata</code> indexed for filtering and usage metrics
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleResetMetaKeys}
+                disabled={loading || metaKeyLoading}
+                className="text-xs"
+              >
+                Reset to defaults
+              </Button>
+            </div>
+
+            {/* Chips list */}
+            <div className="flex flex-wrap gap-2" role="list" aria-label="Indexed metadata keys">
+              {(settings.agentMetadataKeys || ["os", "hostname", "agent-name"]).length === 0 ? (
+                <p className="text-xs text-text-muted italic">No metadata keys configured.</p>
+              ) : (
+                (settings.agentMetadataKeys || ["os", "hostname", "agent-name"]).map((key) => (
+                  <div
+                    key={key}
+                    role="listitem"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-2 border border-border text-xs font-mono text-text-main shadow-xs"
+                  >
+                    <span>{key}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveMetaKey(key)}
+                      disabled={metaKeyLoading}
+                      className="text-text-muted hover:text-red-500 transition-colors p-0.5 rounded-full hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer disabled:opacity-50"
+                      aria-label={`Remove metadata key ${key}`}
+                    >
+                      <span className="material-symbols-outlined text-[14px] leading-none block">close</span>
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Add key input form */}
+            <form onSubmit={handleAddMetaKey} className="flex gap-2 items-center">
+              <input
+                type="text"
+                value={newMetaKey}
+                onChange={(e) => setNewMetaKey(e.target.value)}
+                placeholder="Add metadata key (e.g. mode, cwd, tz)..."
+                disabled={metaKeyLoading}
+                className="h-9 flex-1 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+              />
+              <Button
+                type="submit"
+                size="sm"
+                disabled={metaKeyLoading || !newMetaKey.trim()}
+                icon={metaKeyLoading ? "progress_activity" : "add"}
+                className={metaKeyLoading ? "animate-pulse" : ""}
+              >
+                Add
+              </Button>
+            </form>
+
+            {metaKeyStatus.message && (
+              <p
+                role="alert"
+                className={`text-xs ${metaKeyStatus.type === "error" ? "text-red-500" : "text-green-500"}`}
+              >
+                {metaKeyStatus.message}
+              </p>
+            )}
           </div>
         </Card>
 

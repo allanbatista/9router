@@ -1,5 +1,7 @@
 "use client";
 
+import { VIRTUAL_MODEL_FAMILIES } from "open-sse/services/modelFallback.js";
+
 import { useState, useMemo, useEffect } from "react";
 import PropTypes from "prop-types";
 import Modal from "./Modal";
@@ -404,6 +406,20 @@ export default function ModelSelectModal({
     return combos.filter(c => c.name.toLowerCase().includes(query));
   }, [combos, searchQuery, kindFilter]);
 
+  // Virtual Auto Fallback Models (e.g. gemini-current-flash, claude-current-sonnet)
+  const filteredVirtualModels = useMemo(() => {
+    if (kindFilter || capFilter) return [];
+    const virtualList = Object.keys(VIRTUAL_MODEL_FAMILIES).map((id) => ({
+      id,
+      name: id,
+      value: id,
+      isVirtual: true,
+    }));
+    if (!searchQuery.trim()) return virtualList;
+    const query = searchQuery.toLowerCase();
+    return virtualList.filter((m) => m.name.toLowerCase().includes(query));
+  }, [searchQuery, kindFilter, capFilter]);
+
   // Sort models alphabetically, with added models floated to top
   const sortModels = (models) => {
     const added = models.filter(m => addedModelValues.includes(m.value)).sort((a, b) => a.name.localeCompare(b.name));
@@ -522,6 +538,43 @@ export default function ModelSelectModal({
                       <span className="material-symbols-outlined leading-none" style={{ fontSize: "10px" }}>check</span>
                     )}
                     {combo.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Virtual Auto Fallback Models section */}
+        {filteredVirtualModels.length > 0 && (
+          <div>
+            <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 bg-surface py-0.5">
+              <span className="material-symbols-outlined text-amber-500 text-[14px]">auto_mode</span>
+              <span className="text-xs font-medium text-amber-500">Virtual Auto Fallback (1h Cache)</span>
+              <span className="text-[10px] text-text-muted">({filteredVirtualModels.length})</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {filteredVirtualModels.map((vm) => {
+                const isSelected = selectedModel === vm.value;
+                return (
+                  <button
+                    key={vm.value}
+                    onClick={() => handleSelect(vm)}
+                    className={`
+                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer flex items-center gap-1
+                      ${isSelected
+                        ? "bg-amber-500 text-white border-amber-500"
+                        : addedModelValues.includes(vm.value)
+                          ? "bg-amber-500 border-amber-500 text-white hover:bg-amber-600"
+                          : "bg-surface border-border text-text-main hover:border-amber-500/50 hover:bg-amber-500/5"
+                      }
+                    `}
+                  >
+                    {addedModelValues.includes(vm.value) && (
+                      <span className="material-symbols-outlined leading-none" style={{ fontSize: "10px" }}>check</span>
+                    )}
+                    <span className="material-symbols-outlined text-[12px] opacity-70">dynamic_feed</span>
+                    {vm.name}
                   </button>
                 );
               })}

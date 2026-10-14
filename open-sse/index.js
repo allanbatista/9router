@@ -41,6 +41,19 @@ export {
   getUnavailableUntil,
   filterAvailableAccounts
 } from "./services/accountFallback.js";
+export {
+  MODEL_FAMILIES,
+  VIRTUAL_MODEL_FAMILIES,
+  isVirtualModel,
+  getModelFallbackChain,
+  DEFAULT_MODEL_COOLDOWN_MS,
+  isModelInCooldown,
+  getModelCooldownRemaining,
+  markModelInCooldown,
+  clearModelCooldown,
+  getAllActiveModelCooldowns,
+} from "./services/modelFallback.js";
+
 
 export {
   TOKEN_EXPIRY_BUFFER_MS,

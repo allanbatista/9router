@@ -140,5 +140,10 @@ describe("SAML 2.0 Auth Engine Utilities", () => {
       expect(merged.samlAttributeEmail).toBe("email");
       expect(merged.samlAttributeName).toBe("name");
     });
+
+    it("preserves the legacy observability setting name", () => {
+      expect(mergeWithDefaults({ observabilityEnabled: true }).enableObservability).toBe(true);
+      expect(mergeWithDefaults({ observabilityEnabled: false }).enableObservability).toBe(false);
+    });
   });
 });

@@ -88,6 +88,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   const effectiveStatus = connection.testStatus === "unavailable" && !isCooldown ? "active" : connection.testStatus;
 
   const getStatusVariant = () => getConnectionStatusVariant(connection.isActive, effectiveStatus);
+  const errorDetails = connection.lastErrorRaw || connection.lastError;
 
   const displayName = isOAuth
     ? connection.name || connection.email || connection.displayName || "OAuth Account"
@@ -120,7 +121,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
             {hasAnyProxy && <Badge variant={proxyBadgeVariant} size="sm">Proxy</Badge>}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {connection.lastError && connection.isActive !== false && (
-              <span className="text-xs text-red-500 truncate max-w-[300px]" title={connection.lastError}>{connection.lastError}</span>
+              <span className="text-xs text-red-500 truncate max-w-[300px]" title={errorDetails}>{connection.lastError}</span>
             )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>
           </div>
@@ -404,16 +405,21 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
           <h2 className="text-lg font-semibold">Connections</h2>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-text-muted font-medium">Round Robin</span>
-            <Toggle
-              checked={providerStrategy === "round-robin"}
-              onChange={(enabled) => {
-                const strategy = enabled ? "round-robin" : null;
+            <span className="text-xs text-text-muted font-medium">Strategy</span>
+            <select
+              value={providerStrategy || ""}
+              onChange={(e) => {
+                const strategy = e.target.value || null;
                 setProviderStrategy(strategy);
-                if (enabled && !providerStickyLimit) setProviderStickyLimit("1");
-                saveStrategy(strategy, enabled ? (providerStickyLimit || "1") : providerStickyLimit);
+                if (strategy === "round-robin" && !providerStickyLimit) setProviderStickyLimit("1");
+                saveStrategy(strategy, strategy === "round-robin" ? (providerStickyLimit || "1") : providerStickyLimit);
               }}
-            />
+              className="px-2 py-1 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
+            >
+              <option value="">Fill First (default)</option>
+              <option value="round-robin">Round Robin</option>
+              <option value="round-robin-affinity">Affinity (30m, model-aware)</option>
+            </select>
             {providerStrategy === "round-robin" && (
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-xs text-text-muted">Sticky:</span>

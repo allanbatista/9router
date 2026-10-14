@@ -1,3 +1,4 @@
+import { VIRTUAL_MODEL_FAMILIES } from "open-sse/services/modelFallback.js";
 import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS, getModelKind } from "@/shared/constants/models";
 import {
   AI_PROVIDERS,
@@ -304,6 +305,18 @@ export async function buildModelsList(kindFilter, options = {}) {
       entry.kind = combo.kind;
     }
     models.push(entry);
+  }
+
+  // Virtual Auto Fallback Models (when LLM kind is requested)
+  if (kindFilter.includes(LLM_KIND)) {
+    for (const vId of Object.keys(VIRTUAL_MODEL_FAMILIES)) {
+      models.push({
+        id: vId,
+        object: "model",
+        owned_by: "virtual",
+        kind: LLM_KIND,
+      });
+    }
   }
 
   if (connections.length === 0) {

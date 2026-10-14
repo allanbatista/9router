@@ -1,3 +1,4 @@
+import { isVirtualModel, VIRTUAL_MODEL_FAMILIES } from "./modelFallback.js";
 import REGISTRY from "../providers/registry/index.js";
 
 // Alias→id derived from registry single-source: id→id, alias→id, aliases[]→id.
@@ -125,9 +126,12 @@ export async function getModelInfoCore(modelStr, aliasesOrGetter) {
 // Config-driven prefix → provider inference (first match wins, fallback "openai").
 const MODEL_PREFIX_PROVIDERS = [
   [/^claude-/, "anthropic"],
-  [/^gemini-/, "gemini"],
+  [/^gemini-/, "antigravity"],
   [/^gpt-/, "openai"],
   [/^o[134]/, "openai"],
+  [/^qwen-/, "alitp-intl"],
+  [/^glm-/, "alitp-intl"],
+  [/^kimi-/, "baidu"],
   [/^deepseek-/, "openrouter"],
 ];
 
