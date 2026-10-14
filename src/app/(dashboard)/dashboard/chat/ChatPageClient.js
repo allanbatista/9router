@@ -133,7 +133,7 @@ export default function ChatPageClient() {
               return {
                 id: mId,
                 name: m.name || mId,
-                requestModel: mId,
+                requestModel: `${providerId}/${mId}`,
                 providerId,
               };
             });
@@ -155,7 +155,7 @@ export default function ChatPageClient() {
           setSelectedModel(`combo:${loadedCombos[0].name || loadedCombos[0].id}`);
           setSelectedProvider("combo");
         } else if (groups.length > 0 && groups[0].models?.length > 0) {
-          setSelectedModel(groups[0].models[0].id);
+          setSelectedModel(groups[0].models[0].requestModel);
           setSelectedProvider(groups[0].providerId);
         }
       } catch (err) {

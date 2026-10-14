@@ -29,6 +29,12 @@ describe("Gemini 4 Argon", () => {
     }
   });
 
+  it("preserves the vendor namespace when routing through OpenRouter", () => {
+    expect(parseModel(`openrouter/google/${model}`)).toMatchObject({
+      provider: "openrouter", model: `google/${model}`,
+    });
+  });
+
   it.each(["low", "medium", "high", "none", "off", "minimal", "xhigh", "max"])(
     "normalizes %s to a supported thinking level", (effort) => {
       for (const provider of ["gemini", "antigravity"]) {
